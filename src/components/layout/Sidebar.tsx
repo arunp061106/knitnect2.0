@@ -18,6 +18,7 @@ import {
   ChevronRight,
   X,
   Zap,
+  LogOut,
 } from 'lucide-react';
 
 interface NavItem {
@@ -32,7 +33,7 @@ interface SidebarProps {
   onClose?: () => void;
 }
 
-// OWNER & MANAGER NAV — full access
+// OWNER & MANAGER NAV — full access (10 modules)
 const managementNav: NavItem[] = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Styles & Costing', href: '/styles', icon: Layers },
@@ -71,26 +72,37 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     const supabase = createClient();
 
     const loadProfile = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const { data } = await supabase
-        .from('profiles')
-        .select('full_name, role, department_id')
-        .eq('id', user.id)
-        .single();
-      if (data) setCurrentUser(data);
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          setCurrentUser(null);
+          return;
+        }
+        const { data } = await supabase
+          .from('profiles')
+          .select('full_name, role, department_id')
+          .eq('id', user.id)
+          .single();
+        if (data) setCurrentUser(data);
+      } catch {
+        setCurrentUser(null);
+      }
     };
 
     loadProfile();
 
     const { data: listener } = supabase.auth.onAuthStateChange(async (_event: unknown, session: any) => {
       if (session?.user) {
-        const { data } = await supabase
-          .from('profiles')
-          .select('full_name, role, department_id')
-          .eq('id', session.user.id)
-          .single();
-        if (data) setCurrentUser(data);
+        try {
+          const { data } = await supabase
+            .from('profiles')
+            .select('full_name, role, department_id')
+            .eq('id', session.user.id)
+            .single();
+          if (data) setCurrentUser(data);
+        } catch {
+          // ignore
+        }
       } else {
         setCurrentUser(null);
       }
@@ -108,11 +120,6 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     return pathname?.startsWith(href);
   };
 
-  const handleNavClick = (href: string) => {
-    router.push(href);
-    if (onClose) onClose();
-  };
-
   const portalLabel = isMounted
     ? role === 'owner'
       ? 'Executive Portal'
@@ -128,6 +135,16 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
       ? 'text-cyan-400'
       : 'text-amber-400'
     : 'text-slate-500';
+
+  const handleSwitchRole = async () => {
+    try {
+      const supabase = createClient();
+      await supabase.auth.signOut();
+      window.location.href = '/login';
+    } catch {
+      window.location.href = '/login';
+    }
+  };
 
   return (
     <>
@@ -167,8 +184,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
           })}
         </nav>
 
-        {/* Footer info */}
-        <div className="p-3 mt-auto">
+        {/* Footer info & Switch Role button */}
+        <div className="p-3 mt-auto space-y-2">
           <div className="rounded-xl p-3 bg-slate-900/60 border border-slate-800/50">
             {isMounted && isManagement && (
               <>
@@ -200,6 +217,15 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               <div className="h-10 rounded bg-slate-800/60 animate-pulse" />
             )}
           </div>
+
+          <button
+            type="button"
+            onClick={handleSwitchRole}
+            className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-300 hover:text-rose-200 text-xs font-medium transition"
+          >
+            <LogOut className="w-3.5 h-3.5 text-rose-400" />
+            <span>Switch Role / Logout</span>
+          </button>
         </div>
       </aside>
 
@@ -266,8 +292,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               })}
             </nav>
 
-            {/* Footer info */}
-            <div className="p-3 border-t border-slate-800/80 mt-auto">
+            {/* Footer info & Switch Role */}
+            <div className="p-3 border-t border-slate-800/80 mt-auto space-y-2">
               <div className="rounded-xl p-3 bg-slate-900/60 border border-slate-800/50">
                 {isMounted && isManagement && (
                   <>
@@ -291,6 +317,15 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                   </>
                 )}
               </div>
+
+              <button
+                type="button"
+                onClick={handleSwitchRole}
+                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-300 hover:text-rose-200 text-xs font-medium transition"
+              >
+                <LogOut className="w-3.5 h-3.5 text-rose-400" />
+                <span>Switch Role / Logout</span>
+              </button>
             </div>
           </div>
         </div>

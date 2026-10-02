@@ -13,26 +13,19 @@ export async function middleware(request: NextRequest) {
 
   const supabase = createServerClient(url, anonKey, {
     cookies: {
-      get(name: string) {
-        return request.cookies.get(name)?.value;
+      getAll() {
+        return request.cookies.getAll();
       },
-      set(name: string, value: string, options: any) {
-        request.cookies.set({ name, value, ...options });
+      setAll(cookiesToSet) {
+        cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
         response = NextResponse.next({
           request: {
             headers: request.headers,
           },
         });
-        response.cookies.set({ name, value, ...options });
-      },
-      remove(name: string, options: any) {
-        request.cookies.set({ name, value: '', ...options });
-        response = NextResponse.next({
-          request: {
-            headers: request.headers,
-          },
-        });
-        response.cookies.set({ name, value: '', ...options });
+        cookiesToSet.forEach(({ name, value, options }) =>
+          response.cookies.set(name, value, options)
+        );
       },
     },
   });
@@ -52,28 +45,12 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  // If unauthenticated and not on /login
+  // If unauthenticated and not on /login, redirect to /login
   if (!user && pathname !== '/login') {
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
-  // If authenticated and on /login, redirect by role
-  if (user && pathname === '/login') {
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', user.id)
-      .single();
-
-    const role = profile?.role || 'employee';
-    if (role === 'employee') {
-      return NextResponse.redirect(new URL('/employee/tasks', request.url));
-    } else {
-      return NextResponse.redirect(new URL('/dashboard', request.url));
-    }
-  }
-
-  // If authenticated employee trying to access executive routes
+  // If authenticated employee trying to access executive/management routes
   if (user && pathname !== '/login') {
     const executiveRoutes = [
       '/dashboard',

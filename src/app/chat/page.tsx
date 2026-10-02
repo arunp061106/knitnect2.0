@@ -42,12 +42,16 @@ export default function ChatPage() {
     let isMounted = true;
     const supabase = createClient();
 
+    const safetyTimer = setTimeout(() => {
+      if (isMounted) setLoading(false);
+    }, 3000);
+
     const loadChatData = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
 
         if (!user) {
-          router.push('/login');
+          window.location.href = '/login';
           return;
         }
 
@@ -95,6 +99,7 @@ export default function ChatPage() {
       } catch (err) {
         console.error('Failed to load chat data:', err);
       } finally {
+        clearTimeout(safetyTimer);
         if (isMounted) setLoading(false);
       }
     };
@@ -125,6 +130,7 @@ export default function ChatPage() {
 
     return () => {
       isMounted = false;
+      clearTimeout(safetyTimer);
       supabase.removeChannel(channelsSub);
     };
   }, [router]);
