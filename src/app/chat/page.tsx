@@ -63,49 +63,55 @@ export default function ChatPage() {
     return unsub;
   }, [store, activeChannelId]);
 
-  // Supabase Realtime synchronization (Multi-device live broadcast)
+  // Supabase Realtime synchronization (Multi-device live broadcast across all channels)
   useEffect(() => {
-    if (!isCloudLive || !activeChannelId) return;
+    if (!isCloudLive) return;
 
     const supabase = createClient();
 
-    // 1. Fetch channel messages from Supabase
-    supabase
-      .from('chat_messages')
-      .select('*')
-      .eq('channel_id', activeChannelId)
-      .order('created_at', { ascending: true })
-      .then(({ data, error }) => {
-        if (!error && data && data.length > 0) {
-          setMessages(data as ChatMessage[]);
-        }
-      });
+    // 1. Fetch channel messages from Supabase for current channel
+    if (activeChannelId) {
+      supabase
+        .from('chat_messages')
+        .select('*')
+        .eq('channel_id', activeChannelId)
+        .order('created_at', { ascending: true })
+        .then(({ data, error }) => {
+          if (!error && data && data.length > 0) {
+            data.forEach((m) => store.receiveExternalChatMessage(m as ChatMessage));
+            setMessages(store.getMessagesForChannel(activeChannelId));
+          } else if (error) {
+            console.warn('Could not fetch cloud chat messages:', error.message);
+          }
+        });
+    }
 
-    // 2. Subscribe to new messages on this channel
+    // 2. Subscribe to realtime inserts across all channels (updates sidebar previews + active chat)
     const channel = supabase
-      .channel(`realtime:chat_messages:${activeChannelId}`)
+      .channel('realtime:all_chat_messages')
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'chat_messages',
-          filter: `channel_id=eq.${activeChannelId}`,
         },
         (payload) => {
           const newMsg = payload.new as ChatMessage;
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === newMsg.id)) return prev;
-            return [...prev, newMsg];
-          });
+          store.receiveExternalChatMessage(newMsg);
+          if (activeChannelId) {
+            setMessages(store.getMessagesForChannel(activeChannelId));
+          }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Supabase Realtime status:', status);
+      });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [isCloudLive, activeChannelId]);
+  }, [isCloudLive, activeChannelId, store]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -151,7 +157,8 @@ export default function ChatPage() {
         })
         .then(({ error }) => {
           if (error) {
-            console.warn('Supabase chat sync notice:', error.message);
+            console.error('Supabase chat sync error:', error.message);
+            alert(`⚠️ Supabase Cloud Sync Error: "${error.message}"\n\nPlease ensure you ran the SQL migration script in your Supabase SQL Editor and that NEXT_PUBLIC_SUPABASE_URL is https://chbwrpasfuschpcavxdl.supabase.co`);
           }
         });
     }

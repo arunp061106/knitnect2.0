@@ -1968,6 +1968,19 @@ export class ErpStore {
     return newMsg;
   }
 
+  // Receive and persist external chat message from Supabase Realtime
+  public receiveExternalChatMessage(msg: ChatMessage) {
+    if (!this.state.messages.some((m) => m.id === msg.id)) {
+      this.state.messages.push(msg);
+      const channel = this.state.channels.find((c) => c.id === msg.channel_id);
+      if (channel) {
+        channel.last_message = msg.body;
+        channel.last_message_at = msg.created_at;
+      }
+      this.saveState();
+    }
+  }
+
   // Dispatch
   public getDispatchRecords(userRole: UserRole): DispatchRecord[] {
     if (userRole === 'employee') return [];
