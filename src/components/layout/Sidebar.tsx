@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
+import { ErpStore } from '@/lib/db/erpStore';
+import { Profile } from '@/lib/types/erp';
 import {
   LayoutDashboard,
   Layers,
@@ -15,10 +15,10 @@ import {
   CreditCard,
   Wallet,
   History,
+  ClipboardList,
   ChevronRight,
   X,
   Zap,
-  LogOut,
 } from 'lucide-react';
 
 interface NavItem {
@@ -33,7 +33,7 @@ interface SidebarProps {
   onClose?: () => void;
 }
 
-// OWNER & MANAGER NAV — full access (10 modules)
+// OWNER & MANAGER NAV — full access
 const managementNav: NavItem[] = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Styles & Costing', href: '/styles', icon: Layers },
@@ -54,88 +54,27 @@ const employeeNav: NavItem[] = [
   { name: 'Team Chat', href: '/chat', icon: MessageSquare, description: 'Team communication' },
 ];
 
-interface SidebarProfile {
-  full_name: string;
-  role: string;
-  department_id: string | null;
-}
-
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const store = ErpStore.getInstance();
 
   const [isMounted, setIsMounted] = useState(false);
-  const [currentUser, setCurrentUser] = useState<SidebarProfile | null>(null);
+  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
 
   useEffect(() => {
     setIsMounted(true);
-    const savedRole = localStorage.getItem('knitnect_user_role') || 'owner';
-    const savedName = localStorage.getItem('knitnect_user_name') || 'Authenticated User';
-    setCurrentUser({
-      full_name: savedName,
-      role: savedRole,
-      department_id: null,
+    setCurrentUser(store.getCurrentUser());
+    const unsub = store.subscribe(() => {
+      setCurrentUser(store.getCurrentUser());
     });
-    const supabase = createClient();
+    return unsub;
+  }, [store]);
 
-    const loadProfile = async () => {
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          setCurrentUser(null);
-          return;
-        }
-        const { data } = await supabase
-          .from('profiles')
-          .select('full_name, role, department_id')
-          .eq('id', user.id)
-          .single();
-        if (data) {
-          setCurrentUser(data);
-          if (typeof window !== 'undefined') {
-            localStorage.setItem('knitnect_user_role', data.role);
-            localStorage.setItem('knitnect_user_name', data.full_name);
-          }
-        }
-      } catch {
-        // preserve local cache
-      }
-    };
+  const isManagement = isMounted
+    ? currentUser.role === 'owner' || currentUser.role === 'manager'
+    : false;
 
-    loadProfile();
-
-    const { data: listener } = supabase.auth.onAuthStateChange(async (_event: unknown, session: any) => {
-      if (session?.user) {
-        try {
-          const { data } = await supabase
-            .from('profiles')
-            .select('full_name, role, department_id')
-            .eq('id', session.user.id)
-            .single();
-          if (data) {
-            setCurrentUser(data);
-            if (typeof window !== 'undefined') {
-              localStorage.setItem('knitnect_user_role', data.role);
-              localStorage.setItem('knitnect_user_name', data.full_name);
-            }
-          }
-        } catch {
-          // ignore
-        }
-      } else {
-        setCurrentUser(null);
-        if (typeof window !== 'undefined') {
-          localStorage.removeItem('knitnect_user_role');
-          localStorage.removeItem('knitnect_user_name');
-        }
-      }
-    });
-
-    return () => { listener.subscription.unsubscribe(); };
-  }, []);
-
-  const role = currentUser?.role || (typeof window !== 'undefined' ? localStorage.getItem('knitnect_user_role') : null) || 'owner';
-  const isManagement = role === 'owner' || role === 'manager';
   const navItems = isManagement ? managementNav : employeeNav;
 
   const isActive = (href: string) => {
@@ -143,46 +82,26 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     return pathname?.startsWith(href);
   };
 
-  const portalLabel = isManagement
-    ? role === 'owner'
-      ? 'Executive Portal'
-      : 'Management Portal'
-    : 'Employee Portal';
-
-  const portalColor = isManagement
-    ? role === 'owner'
-      ? 'text-violet-400'
-      : 'text-cyan-400'
-    : 'text-amber-400';
-
-  const handleSwitchRole = async () => {
-    try {
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('knitnect_user_role');
-        localStorage.removeItem('knitnect_user_name');
-      }
-      const supabase = createClient();
-      await supabase.auth.signOut();
-      window.location.href = '/login';
-    } catch {
-      window.location.href = '/login';
-    }
+  const handleNavClick = (href: string) => {
+    router.push(href);
+    if (onClose) onClose();
   };
 
-  if (!isMounted) {
-    return (
-      <aside className="hidden md:flex w-[220px] bg-[#080c14] border-r border-slate-800/60 flex-col flex-shrink-0 min-h-[calc(100vh-3.5rem)] select-none">
-        <div className="px-4 pt-5 pb-3">
-          <div className="h-3 w-28 rounded bg-slate-800/60 animate-pulse" />
-        </div>
-        <div className="flex-1 px-2 space-y-2">
-          {[1, 2, 3, 4, 5, 6].map((i) => (
-            <div key={i} className="h-9 rounded-lg bg-slate-900/40 animate-pulse" />
-          ))}
-        </div>
-      </aside>
-    );
-  }
+  const portalLabel = isMounted
+    ? currentUser.role === 'owner'
+      ? 'Executive Portal'
+      : currentUser.role === 'manager'
+      ? 'Management Portal'
+      : 'Employee Portal'
+    : 'Portal';
+
+  const portalColor = isMounted
+    ? currentUser.role === 'owner'
+      ? 'text-violet-400'
+      : currentUser.role === 'manager'
+      ? 'text-cyan-400'
+      : 'text-amber-400'
+    : 'text-slate-500';
 
   return (
     <>
@@ -192,7 +111,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         <div className="px-4 pt-5 pb-3">
           <div className={`text-[10px] font-bold uppercase tracking-widest ${portalColor} flex items-center gap-1.5`}>
             <span className={`w-1.5 h-1.5 rounded-full ${
-              role === 'owner' ? 'bg-violet-400' : role === 'manager' ? 'bg-cyan-400' : 'bg-amber-400'
+              isMounted
+                ? currentUser.role === 'owner' ? 'bg-violet-400' : currentUser.role === 'manager' ? 'bg-cyan-400' : 'bg-amber-400'
+                : 'bg-slate-500'
             }`} />
             {portalLabel}
           </div>
@@ -205,25 +126,26 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             const active = isActive(item.href);
 
             return (
-              <Link
+              <button
                 key={item.href}
-                href={item.href}
-                className={`nav-item w-full text-left flex items-center ${active ? 'active' : ''}`}
+                type="button"
+                onClick={() => router.push(item.href)}
+                className={`nav-item w-full text-left ${active ? 'active' : ''}`}
               >
                 <Icon className={`nav-icon w-4 h-4`} />
                 <span className="truncate">{item.name}</span>
                 {active && (
                   <ChevronRight className="w-3 h-3 ml-auto text-blue-400 flex-shrink-0" />
                 )}
-              </Link>
+              </button>
             );
           })}
         </nav>
 
-        {/* Footer info & Switch Role button */}
-        <div className="p-3 mt-auto space-y-2">
+        {/* Footer info */}
+        <div className="p-3 mt-auto">
           <div className="rounded-xl p-3 bg-slate-900/60 border border-slate-800/50">
-            {isManagement && (
+            {isMounted && isManagement && (
               <>
                 <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Active Order</div>
                 <div className="flex items-center justify-between">
@@ -238,30 +160,21 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               </>
             )}
 
-            {!isManagement && currentUser && (
+            {isMounted && !isManagement && (
               <>
                 <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">My Assignment</div>
                 <div className="text-xs font-semibold text-slate-300">{currentUser.full_name}</div>
-                <div className="text-[10px] text-slate-500 mt-0.5">Floor Operations</div>
+                <div className="text-[10px] text-slate-500 mt-0.5">{currentUser.department_name || 'Floor Operations'}</div>
                 <div className="mt-2 px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-300 font-medium">
                   Floor Operations Active
                 </div>
               </>
             )}
 
-            {!isMounted && !currentUser && (
+            {!isMounted && (
               <div className="h-10 rounded bg-slate-800/60 animate-pulse" />
             )}
           </div>
-
-          <button
-            type="button"
-            onClick={handleSwitchRole}
-            className="w-full flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-300 hover:text-rose-200 text-xs font-medium transition"
-          >
-            <LogOut className="w-3.5 h-3.5 text-rose-400" />
-            <span>Switch Role / Logout</span>
-          </button>
         </div>
       </aside>
 
@@ -297,7 +210,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             <div className="px-4 pt-4 pb-2">
               <div className={`text-[10px] font-bold uppercase tracking-widest ${portalColor} flex items-center gap-1.5`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${
-                  role === 'owner' ? 'bg-violet-400' : role === 'manager' ? 'bg-cyan-400' : 'bg-amber-400'
+                  isMounted
+                    ? currentUser.role === 'owner' ? 'bg-violet-400' : currentUser.role === 'manager' ? 'bg-cyan-400' : 'bg-amber-400'
+                    : 'bg-slate-500'
                 }`} />
                 {portalLabel}
               </div>
@@ -310,10 +225,10 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 const active = isActive(item.href);
 
                 return (
-                  <Link
+                  <button
                     key={item.href}
-                    href={item.href}
-                    onClick={onClose}
+                    type="button"
+                    onClick={() => handleNavClick(item.href)}
                     className={`nav-item w-full text-left py-2.5 px-3 rounded-lg flex items-center gap-3 ${active ? 'active bg-blue-600/15 text-blue-400' : 'text-slate-300 hover:bg-slate-800/60'}`}
                   >
                     <Icon className="nav-icon w-4 h-4 flex-shrink-0" />
@@ -321,15 +236,15 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                     {active && (
                       <ChevronRight className="w-3.5 h-3.5 ml-auto text-blue-400 flex-shrink-0" />
                     )}
-                  </Link>
+                  </button>
                 );
               })}
             </nav>
 
-            {/* Footer info & Switch Role */}
-            <div className="p-3 border-t border-slate-800/80 mt-auto space-y-2">
+            {/* Footer info */}
+            <div className="p-3 border-t border-slate-800/80 mt-auto">
               <div className="rounded-xl p-3 bg-slate-900/60 border border-slate-800/50">
-                {isManagement && (
+                {isMounted && isManagement && (
                   <>
                     <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Active Order</div>
                     <div className="flex items-center justify-between">
@@ -343,23 +258,14 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                     </div>
                   </>
                 )}
-                {!isManagement && currentUser && (
+                {isMounted && !isManagement && (
                   <>
                     <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">My Assignment</div>
                     <div className="text-xs font-semibold text-slate-300">{currentUser.full_name}</div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">Floor Operations</div>
+                    <div className="text-[10px] text-slate-500 mt-0.5">{currentUser.department_name || 'Floor Operations'}</div>
                   </>
                 )}
               </div>
-
-              <button
-                type="button"
-                onClick={handleSwitchRole}
-                className="w-full flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-rose-300 hover:text-rose-200 text-xs font-medium transition"
-              >
-                <LogOut className="w-3.5 h-3.5 text-rose-400" />
-                <span>Switch Role / Logout</span>
-              </button>
             </div>
           </div>
         </div>

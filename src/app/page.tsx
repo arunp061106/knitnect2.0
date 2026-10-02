@@ -2,16 +2,17 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { ErpStore } from '@/lib/db/erpStore';
 
 export default function RootPage() {
   const router = useRouter();
 
   useEffect(() => {
-    const role = typeof window !== 'undefined' ? localStorage.getItem('knitnect_user_role') : null;
+    const store = ErpStore.getInstance();
+    const user = store.getCurrentUser();
 
-    if (!role) {
-      router.replace('/login');
-    } else if (role === 'employee') {
+    // Role-based redirect on initial load
+    if (user.role === 'employee') {
       router.replace('/employee/tasks');
     } else {
       router.replace('/dashboard');

@@ -25,17 +25,3 @@ export function formatDateTimeSafe(dateStr?: string | null): string {
   const h12 = hours % 12 || 12;
   return `${year}-${month}-${day} ${h12.toString().padStart(2, '0')}:${minutes} ${ampm}`;
 }
-
-/**
- * Standard Indian Rupee Currency Formatter
- * Strict adherence to: Intl en-IN, 2 decimals
- */
-export function formatINR(val: number | string | null | undefined): string {
-  const num = Number(val) || 0;
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(num);
-}

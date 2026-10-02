@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { exportToExcel } from '@/lib/excel/excelExport';
-import { createClient } from '@/lib/supabase/client';
-import { ProductionRun, ProductionStageLog, BatchTransfer } from '@/lib/types/erp';
+import * as XLSX from 'xlsx';
+import { ErpStore } from '@/lib/db/erpStore';
+import { ProductionRun, ProductionStageLog, Profile, Style, BatchTransfer } from '@/lib/types/erp';
 import { Badge } from '@/components/ui/Badge';
 import { computeStageLoss, verifyFloorWeights, STAGE_BENCHMARK_LOSS_PCT, DEFAULT_BLENDED_FABRIC_COST_PER_KG } from '@/lib/domain/loss';
 import {
@@ -33,18 +33,13 @@ import {
 
 export default function ProductionPipelinePage() {
   const router = useRouter();
-  const supabase = createClient();
+  const store = ErpStore.getInstance();
 
   const [isMounted, setIsMounted] = useState<boolean>(false);
-  const [currentUser, setCurrentUser] = useState<{ id: string; role: string; full_name: string }>({
-    id: '',
-    role: 'manager',
-    full_name: '',
-  });
+  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
   const [runs, setRuns] = useState<ProductionRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string>('');
   const [stageLogs, setStageLogs] = useState<ProductionStageLog[]>([]);
-  const [batchTransfers, setBatchTransfers] = useState<BatchTransfer[]>([]);
 
   // Selected stage for weight entry drawer
   const [activeStageLog, setActiveStageLog] = useState<ProductionStageLog | null>(null);
@@ -68,6 +63,65 @@ export default function ProductionPipelinePage() {
   // Only management sees financial loss data — employees see stage progress only
   const isManagement = isMounted ? currentUser.role === 'owner' || currentUser.role === 'manager' : false;
 
+  useEffect(() => {
+    setIsMounted(true);
+
+    const refresh = () => {
+      const u = store.getCurrentUser();
+      setCurrentUser(u);
+
+      // Redirect employees to their isolated pipeline view
+      if (u.role === 'employee') {
+        router.replace('/employee/pipeline');
+        return;
+      }
+
+      const allRuns = store['state'].productionRuns;
+      setRuns(allRuns);
+
+      const activeId = selectedRunId || allRuns[0]?.id || '';
+      if (!selectedRunId && activeId) {
+        setSelectedRunId(activeId);
+      }
+
+      if (activeId) {
+        const logs = store['state'].stageLogs
+          .filter((s) => s.production_run_id === activeId)
+          .sort((a, b) => a.stage_order - b.stage_order);
+        setStageLogs(logs);
+
+        // Keep active stage log synchronized
+        if (activeStageLog) {
+          const updatedActive = logs.find((l) => l.id === activeStageLog.id);
+          if (updatedActive) {
+            setActiveStageLog(updatedActive);
+          }
+        } else if (logs.length > 0) {
+          const currentStage = logs.find((l) => l.status === 'in_progress') || logs[0];
+          handleOpenWeightEntry(currentStage);
+        }
+      }
+    };
+
+    refresh();
+    const unsub = store.subscribe(refresh);
+    return unsub;
+  }, [store, router, selectedRunId]);
+
+  const selectedRun = runs.find((r) => r.id === selectedRunId) || runs[0];
+
+  const handleSelectRun = (runId: string) => {
+    setSelectedRunId(runId);
+    const logs = store['state'].stageLogs
+      .filter((s) => s.production_run_id === runId)
+      .sort((a, b) => a.stage_order - b.stage_order);
+    setStageLogs(logs);
+    if (logs.length > 0) {
+      const current = logs.find((l) => l.status === 'in_progress') || logs[0];
+      handleOpenWeightEntry(current);
+    }
+  };
+
   const handleOpenWeightEntry = (stage: ProductionStageLog) => {
     setActiveStageLog(stage);
     setInputWeight(stage.input_weight_kg || 0);
@@ -87,132 +141,7 @@ export default function ProductionPipelinePage() {
     setBatchPassWeight(stage.output_weight_kg > 0 ? stage.output_weight_kg : 80);
   };
 
-  const fetchPipelineData = useCallback(async (runIdToSelect?: string) => {
-    // 1. Fetch runs with styles
-    const { data: rData, error: rErr } = await supabase
-      .from('production_runs')
-      .select(`
-        *,
-        styles (
-          style_number,
-          description,
-          garment_process_type
-        )
-      `)
-      .order('created_at', { ascending: false });
-
-    if (rErr) console.error('Error fetching runs:', rErr);
-
-    const allRuns = (rData || []).map((r: any) => ({
-      ...r,
-      style_number: r.styles?.style_number || r.style_number,
-      description: r.styles?.description,
-      garment_process_type: r.styles?.garment_process_type,
-    }));
-    setRuns(allRuns);
-
-    const activeId = runIdToSelect || selectedRunId || allRuns[0]?.id || '';
-    if (activeId) {
-      if (!selectedRunId || runIdToSelect) {
-        setSelectedRunId(activeId);
-      }
-
-      // 2. Fetch stage logs
-      const { data: stData, error: stErr } = await supabase
-        .from('production_stage_logs')
-        .select(`
-          *,
-          departments (
-            name
-          )
-        `)
-        .eq('production_run_id', activeId)
-        .order('stage_order', { ascending: true });
-
-      if (stErr) console.error('Error fetching stage logs:', stErr);
-      if (stData) {
-        const logs: ProductionStageLog[] = stData.map((s: any) => ({
-          ...s,
-          department_name: s.departments?.name,
-          employee_reported_output_kg: s.output_weight_kg,
-          employee_waste_scrap_weight_kg: s.loss_kg,
-        }));
-        setStageLogs(logs);
-
-        // Keep active stage log synchronized
-        if (activeStageLog) {
-          const updatedActive = logs.find((l) => l.id === activeStageLog.id);
-          if (updatedActive) {
-            setActiveStageLog(updatedActive);
-          }
-        } else if (logs.length > 0) {
-          const currentStage = logs.find((l) => l.status === 'in_progress') || logs[0];
-          handleOpenWeightEntry(currentStage);
-        }
-      }
-
-      // 3. Fetch batch transfers
-      const { data: bData } = await supabase
-        .from('batch_transfers')
-        .select('*')
-        .eq('production_run_id', activeId)
-        .order('passed_at', { ascending: false });
-
-      if (bData) {
-        setBatchTransfers(bData as BatchTransfer[]);
-      }
-    }
-  }, [supabase, selectedRunId, activeStageLog]);
-
-  useEffect(() => {
-    setIsMounted(true);
-
-    const init = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) {
-        router.replace('/login');
-        return;
-      }
-
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('id, role, full_name')
-        .eq('id', user.id)
-        .single();
-
-      if (!profile) {
-        router.replace('/login');
-        return;
-      }
-
-      if (profile.role === 'employee') {
-        router.replace('/employee/pipeline');
-        return;
-      }
-
-      setCurrentUser({
-        id: profile.id,
-        role: profile.role,
-        full_name: profile.full_name || 'Staff',
-      });
-
-      await fetchPipelineData();
-    };
-
-    init();
-  }, [supabase, router, fetchPipelineData]);
-
-  const selectedRun = runs.find((r) => r.id === selectedRunId) || runs[0];
-
-  const handleSelectRun = async (runId: string) => {
-    setSelectedRunId(runId);
-    await fetchPipelineData(runId);
-  };
-
-  const handleSaveWeights = async (e: React.FormEvent) => {
+  const handleSaveWeights = (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeStageLog) return;
 
@@ -226,259 +155,138 @@ export default function ProductionPipelinePage() {
       return;
     }
 
-    // Previous stage validation
-    const prevStage = stageLogs.find((s) => s.stage_order === activeStageLog.stage_order - 1);
-    if (prevStage && prevStage.output_weight_kg > 0 && inputWeight > prevStage.output_weight_kg * 1.05) {
+    const res = store.updateStageWeightAndLoss(
+      activeStageLog.id,
+      inputWeight,
+      outputWeight,
+      stageNotes,
+      outputWeight,
+      {
+        reportedOutputKg: employeeFloorOutput,
+        wasteScrapKg: employeeFloorScrap,
+        scaleId: machineScaleId,
+      }
+    );
+
+    if (!res.success && res.errorCode === 'EXCEEDS_PREVIOUS_OUTPUT') {
       setApprovalPending(true);
-      setApprovalMaxKg(prevStage.output_weight_kg);
+      setApprovalMaxKg(res.maxInputKg || 0);
       return;
     }
 
-    const lossCalc = computeStageLoss(
-      activeStageLog.stage_name,
-      Number(inputWeight),
-      Number(outputWeight),
-      selectedRun?.blended_cost_per_kg || DEFAULT_BLENDED_FABRIC_COST_PER_KG
-    );
-
-    const { error: updErr } = await supabase
-      .from('production_stage_logs')
-      .update({
-        input_weight_kg: Number(inputWeight),
-        output_weight_kg: Number(outputWeight),
-        loss_kg: lossCalc.lossKg,
-        loss_pct: lossCalc.lossPct,
-        loss_value: lossCalc.lossValue,
-        machine_scale_id: machineScaleId,
-        stage_notes: stageNotes,
-        notes: stageNotes,
-      })
-      .eq('id', activeStageLog.id);
-
-    if (updErr) {
-      alert('Failed to update stage weights: ' + updErr.message);
-      return;
+    if (res.success && res.stageLog) {
+      setActiveStageLog(res.stageLog);
+      setActionMessage(
+        `✓ Updated weights for Stage ${res.stageLog.stage_order} ("${res.stageLog.stage_name}"): Loss = ${res.stageLog.loss_kg} kg (${res.stageLog.loss_pct}%) · Value = ₹${res.stageLog.loss_value}. Cross-verification: ${res.stageLog.discrepancy_status?.toUpperCase() || 'EVALUATED'}.`
+      );
+      setTimeout(() => setActionMessage(null), 5000);
     }
-
-    await supabase.from('audit_log').insert({
-      user_id: currentUser.id,
-      action: 'UPDATE',
-      table_name: 'production_stage_logs',
-      record_id: activeStageLog.id,
-      notes: `Updated weights for Stage ${activeStageLog.stage_order} (${activeStageLog.stage_name}): Loss = ${lossCalc.lossKg} kg (${lossCalc.lossPct}%)`,
-    });
-
-    setActionMessage(
-      `✓ Updated weights for Stage ${activeStageLog.stage_order} ("${activeStageLog.stage_name}"): Loss = ${lossCalc.lossKg} kg (${lossCalc.lossPct}%) · Value = ₹${lossCalc.lossValue}.`
-    );
-    setTimeout(() => setActionMessage(null), 5000);
-    await fetchPipelineData();
   };
 
   // Parallel Batch Progression: Pass Batch Forward to Downstream Stage
-  const handlePassBatchForward = async () => {
-    if (!activeStageLog || !selectedRun) return;
+  const handlePassBatchForward = () => {
+    if (!activeStageLog) return;
     if (batchPassWeight <= 0) {
       alert('Please enter a valid batch weight in kg to pass forward.');
       return;
     }
 
-    const nextStage = stageLogs.find((s) => s.stage_order === activeStageLog.stage_order + 1);
-    if (!nextStage) {
-      alert('Cannot pass batch: This is the final stage in the pipeline.');
-      return;
+    const res = store.passBatchToNextStage(
+      activeStageLog.id,
+      batchPassWeight,
+      currentUser.id,
+      stageNotes
+    );
+
+    if (res.success) {
+      // Re-fetch stage logs and active stage log from store
+      if (selectedRunId) {
+        const logs = store['state'].stageLogs
+          .filter((s) => s.production_run_id === selectedRunId)
+          .sort((a, b) => a.stage_order - b.stage_order);
+        setStageLogs(logs);
+        const updated = logs.find((l) => l.id === activeStageLog.id);
+        if (updated) setActiveStageLog({ ...updated });
+      }
+      setActionMessage(res.message);
+      setTimeout(() => setActionMessage(null), 8000);
+    } else {
+      alert(res.message);
     }
-
-    const existingBatches = batchTransfers.filter((b) => b.from_stage_id === activeStageLog.id);
-    const batchNo = existingBatches.length + 1;
-
-    const { error: bErr } = await supabase.from('batch_transfers').insert({
-      production_run_id: selectedRun.id,
-      from_stage_id: activeStageLog.id,
-      to_stage_id: nextStage.id,
-      batch_number: batchNo,
-      weight_kg: Number(batchPassWeight),
-      passed_by: currentUser.id,
-      notes: stageNotes,
-    });
-
-    if (bErr) {
-      alert('Failed to pass batch: ' + bErr.message);
-      return;
-    }
-
-    await supabase
-      .from('production_stage_logs')
-      .update({
-        input_weight_kg: Number(nextStage.input_weight_kg || 0) + Number(batchPassWeight),
-        status: 'in_progress',
-      })
-      .eq('id', nextStage.id);
-
-    await supabase.from('audit_log').insert({
-      user_id: currentUser.id,
-      action: 'CREATE',
-      table_name: 'batch_transfers',
-      notes: `Passed Batch #${batchNo} (${batchPassWeight} kg) from Stage ${activeStageLog.stage_order} to Stage ${nextStage.stage_order}`,
-    });
-
-    setActionMessage(`✓ Passed Batch #${batchNo} (${batchPassWeight} kg) forward to Stage ${nextStage.stage_order}: ${nextStage.stage_name}`);
-    setTimeout(() => setActionMessage(null), 8000);
-    await fetchPipelineData();
   };
 
   // Direct status control for parallel stage management
-  const handleSetStageStatus = async (status: 'pending' | 'in_progress' | 'done') => {
+  const handleSetStageStatus = (status: 'pending' | 'in_progress' | 'done') => {
     if (!activeStageLog) return;
-    const { error } = await supabase
-      .from('production_stage_logs')
-      .update({
-        status,
-        completed_at: status === 'done' ? new Date().toISOString() : null,
-      })
-      .eq('id', activeStageLog.id);
-
-    if (error) {
-      alert('Failed to update stage status: ' + error.message);
-      return;
+    const res = store.setStageStatus(activeStageLog.id, status, currentUser.id);
+    if (res.success && res.stageLog) {
+      setActiveStageLog(res.stageLog);
+      setActionMessage(res.message);
+      setTimeout(() => setActionMessage(null), 4000);
     }
-
-    await supabase.from('audit_log').insert({
-      user_id: currentUser.id,
-      action: 'UPDATE',
-      table_name: 'production_stage_logs',
-      record_id: activeStageLog.id,
-      notes: `Set stage ${activeStageLog.stage_name} to ${status}`,
-    });
-
-    setActionMessage(`Stage "${activeStageLog.stage_name}" status set to ${status.toUpperCase()}.`);
-    setTimeout(() => setActionMessage(null), 4000);
-    await fetchPipelineData();
   };
 
-  const handleAdvanceStage = async (stageLogId: string) => {
+  const handleAdvanceStage = (stageLogId: string) => {
     if (!selectedRun) return;
-    const currentStage = stageLogs.find((s) => s.id === stageLogId);
-    if (!currentStage) return;
-
-    // Mark current done
-    await supabase
-      .from('production_stage_logs')
-      .update({
-        status: 'done',
-        completed_at: new Date().toISOString(),
-      })
-      .eq('id', stageLogId);
-
-    // Find next
-    const nextStage = stageLogs.find((s) => s.stage_order === currentStage.stage_order + 1);
-    if (nextStage) {
-      await supabase
-        .from('production_stage_logs')
-        .update({
-          status: 'in_progress',
-          input_weight_kg: nextStage.input_weight_kg > 0 ? nextStage.input_weight_kg : currentStage.output_weight_kg,
-        })
-        .eq('id', nextStage.id);
-
-      await supabase
-        .from('production_runs')
-        .update({
-          current_stage_order: nextStage.stage_order,
-          current_stage_name: nextStage.stage_name,
-        })
-        .eq('id', selectedRun.id);
-
-      setActionMessage(`Advanced pipeline to Stage ${nextStage.stage_order}: ${nextStage.stage_name}.`);
-    } else {
-      await supabase
-        .from('production_runs')
-        .update({
-          status: 'completed',
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', selectedRun.id);
-
-      setActionMessage('All 15 pipeline stages completed! Production run finished.');
-    }
-
+    const res = store.advanceStage(selectedRun.id, stageLogId, currentUser.id);
+    setActionMessage(res.message);
     setTimeout(() => setActionMessage(null), 6000);
-    await fetchPipelineData();
+
+    setTimeout(() => {
+      const refreshedLogs = store['state'].stageLogs
+        .filter((s) => s.production_run_id === selectedRun.id)
+        .sort((a, b) => a.stage_order - b.stage_order);
+      const nextActive = refreshedLogs.find((l) => l.status === 'in_progress');
+      if (nextActive) {
+        handleOpenWeightEntry(nextActive);
+      }
+    }, 100);
   };
 
   // Export Production Traveler (.xlsx)
   const handleExportTravelerExcel = () => {
     try {
+      const wb = XLSX.utils.book_new();
+
       const stageRows = stageLogs.map((s) => ({
-        stage_order: s.stage_order,
-        stage_name: s.stage_name,
-        department: s.department_name || 'Production',
-        status: s.status.toUpperCase(),
-        input_weight_kg: s.input_weight_kg,
-        output_weight_kg: s.output_weight_kg,
-        loss_kg: s.loss_kg,
-        loss_pct: `${s.loss_pct}%`,
-        loss_value: s.loss_value,
-        floor_output: s.employee_reported_output_kg || 'Pending',
-        floor_scrap: s.employee_waste_scrap_weight_kg || 0,
-        scale_id: s.machine_scale_id || 'N/A',
-        discrepancy_kg: s.weight_discrepancy_kg || 0,
-        discrepancy_pct: `${s.weight_discrepancy_pct || 0}%`,
-        discrepancy_status: s.discrepancy_status ? s.discrepancy_status.toUpperCase() : 'PENDING',
-        notes: s.notes || '',
-        completed_at: s.completed_at || '',
+        'Stage #': s.stage_order,
+        'Stage Name': s.stage_name,
+        'Department': s.department_name || 'Production',
+        'Status': s.status.toUpperCase(),
+        'Input Weight (kg)': s.input_weight_kg,
+        'Output Weight (kg)': s.output_weight_kg,
+        'Process Loss (kg)': s.loss_kg,
+        'Loss (%)': `${s.loss_pct}%`,
+        'Loss Value (INR)': s.loss_value,
+        'Floor Output (kg)': s.employee_reported_output_kg || 'Pending',
+        'Floor Scrap (kg)': s.employee_waste_scrap_weight_kg || 0,
+        'Scale ID': s.machine_scale_id || 'N/A',
+        'Discrepancy (kg)': s.weight_discrepancy_kg || 0,
+        'Discrepancy (%)': `${s.weight_discrepancy_pct || 0}%`,
+        'Discrepancy Status': s.discrepancy_status ? s.discrepancy_status.toUpperCase() : 'PENDING',
+        'Notes': s.notes || '',
+        'Completed At': s.completed_at || '',
       }));
 
+      const wsStages = XLSX.utils.json_to_sheet(stageRows);
+      XLSX.utils.book_append_sheet(wb, wsStages, 'Production Traveler & Batches');
+
       const summaryRows = [
-        { parameter: 'Style Number', value: selectedRun?.style_number || 'KB13P301X1' },
-        { parameter: 'Description', value: selectedRun?.description || 'RIN | JOGGING PANTS' },
-        { parameter: 'Production Run Type', value: selectedRun?.run_type.toUpperCase() || 'SAMPLE' },
-        { parameter: 'Target Quantity', value: selectedRun?.target_qty || 5000 },
-        { parameter: 'Blended Fabric Rate (INR/kg)', value: runBlendedCost },
-        { parameter: 'Total Stages Count', value: stageLogs.length },
-        { parameter: 'Completed Stages', value: completedStagesCount },
-        { parameter: 'Active Parallel Stages', value: parallelActiveStages.length },
-        { parameter: 'Cumulative Process Loss (kg)', value: totalLossKg },
-        { parameter: 'Cumulative Loss Value (INR)', value: totalLossValue },
+        { Parameter: 'Style Number', Value: selectedRun?.style_number || 'KB13P301X1' },
+        { Parameter: 'Description', Value: selectedRun?.description || 'RIN | JOGGING PANTS' },
+        { Parameter: 'Production Run Type', Value: selectedRun?.run_type.toUpperCase() || 'SAMPLE' },
+        { Parameter: 'Target Quantity', Value: selectedRun?.target_qty || 5000 },
+        { Parameter: 'Blended Fabric Rate (INR/kg)', Value: runBlendedCost },
+        { Parameter: 'Total Stages Count', Value: stageLogs.length },
+        { Parameter: 'Completed Stages', Value: completedStagesCount },
+        { Parameter: 'Active Parallel Stages', Value: parallelActiveStages.length },
+        { Parameter: 'Cumulative Process Loss (kg)', Value: totalLossKg },
+        { Parameter: 'Cumulative Loss Value (INR)', Value: totalLossValue },
       ];
+      const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
+      XLSX.utils.book_append_sheet(wb, wsSummary, 'Executive Loss Summary');
 
-      exportToExcel(
-        [
-          {
-            name: 'Production Traveler & Batches',
-            columns: [
-              { header: 'Stage #', key: 'stage_order', width: 10 },
-              { header: 'Stage Name', key: 'stage_name', width: 22 },
-              { header: 'Department', key: 'department', width: 20 },
-              { header: 'Status', key: 'status', width: 14 },
-              { header: 'Input Weight (kg)', key: 'input_weight_kg', width: 18 },
-              { header: 'Output Weight (kg)', key: 'output_weight_kg', width: 18 },
-              { header: 'Process Loss (kg)', key: 'loss_kg', width: 16 },
-              { header: 'Loss (%)', key: 'loss_pct', width: 12 },
-              { header: 'Loss Value (INR)', key: 'loss_value', width: 18 },
-              { header: 'Floor Output (kg)', key: 'floor_output', width: 18 },
-              { header: 'Floor Scrap (kg)', key: 'floor_scrap', width: 16 },
-              { header: 'Scale ID', key: 'scale_id', width: 18 },
-              { header: 'Discrepancy (kg)', key: 'discrepancy_kg', width: 16 },
-              { header: 'Discrepancy (%)', key: 'discrepancy_pct', width: 16 },
-              { header: 'Discrepancy Status', key: 'discrepancy_status', width: 20 },
-              { header: 'Notes', key: 'notes', width: 25 },
-              { header: 'Completed At', key: 'completed_at', width: 22 },
-            ],
-            rows: stageRows,
-          },
-          {
-            name: 'Executive Loss Summary',
-            columns: [
-              { header: 'Parameter', key: 'parameter', width: 30 },
-              { header: 'Value', key: 'value', width: 25 },
-            ],
-            rows: summaryRows,
-          },
-        ],
-        `Production-Traveler-${selectedRun?.style_number || 'Style'}-Loss-Ledger.xlsx`
-      );
-
+      XLSX.writeFile(wb, `Production-Traveler-${selectedRun?.style_number || 'Style'}-Loss-Ledger.xlsx`);
       setActionMessage('Production traveler & loss ledger exported successfully to Excel (.xlsx)!');
       setTimeout(() => setActionMessage(null), 5000);
     } catch (err) {
@@ -504,7 +312,7 @@ export default function ProductionPipelinePage() {
         inputWeight || activeStageLog.input_weight_kg,
         outputWeight || activeStageLog.output_weight_kg,
         runBlendedCost,
-        stageLogs.filter((l) => l.status === 'done')
+        store['state'].stageLogs.filter((l) => l.status === 'done')
       )
     : null;
 
@@ -520,10 +328,10 @@ export default function ProductionPipelinePage() {
 
   // Batch transfer queries for active stage (Loophole Fix: Tracking batches & timestamps)
   const stageBatchesPassed: BatchTransfer[] = activeStageLog
-    ? batchTransfers.filter((b) => b.from_stage_id === activeStageLog.id)
+    ? store.getBatchTransfers(selectedRun?.id, activeStageLog.id).filter((b) => b.from_stage_id === activeStageLog.id)
     : [];
   const stageBatchesReceived: BatchTransfer[] = activeStageLog
-    ? batchTransfers.filter((b) => b.to_stage_id === activeStageLog.id)
+    ? store.getBatchTransfers(selectedRun?.id, activeStageLog.id).filter((b) => b.to_stage_id === activeStageLog.id)
     : [];
   const totalBatchesMoved = stageBatchesPassed.length;
   const totalWeightMoved = stageBatchesPassed.reduce((sum, b) => sum + (b.weight_kg || 0), 0);
@@ -613,7 +421,7 @@ export default function ProductionPipelinePage() {
               </button>
               {(currentUser.role === 'manager' || currentUser.role === 'owner') ? (
                 <button
-                  onClick={async () => {
+                  onClick={() => {
                     if (!approvalReason.trim()) {
                       alert('Please enter a justification reason before overriding.');
                       return;
@@ -621,28 +429,18 @@ export default function ProductionPipelinePage() {
                     if (!activeStageLog) return;
                     // Force save with override note
                     const overrideNote = `[MANAGER OVERRIDE: ${approvalReason.trim()}]${stageNotes ? ' | ' + stageNotes : ''}`;
-                    await supabase
-                      .from('production_stage_logs')
-                      .update({
-                        input_weight_kg: inputWeight,
-                        output_weight_kg: outputWeight,
-                        notes: overrideNote,
-                      })
-                      .eq('id', activeStageLog.id);
-
-                    await supabase.from('audit_log').insert({
-                      user_id: currentUser.id,
-                      action: 'OVERRIDE',
-                      table_name: 'production_stage_logs',
-                      record_id: activeStageLog.id,
-                      notes: `Manager override for input weight ${inputWeight} kg: ${approvalReason}`,
-                    });
-
-                    setActionMessage(`✓ Manager override accepted. Input weight ${inputWeight} kg saved with justification logged.`);
-                    setTimeout(() => setActionMessage(null), 6000);
+                    const res = store['state'].stageLogs.find((s) => s.id === activeStageLog.id);
+                    if (res) {
+                      res.input_weight_kg = inputWeight;
+                      res.output_weight_kg = outputWeight;
+                      res.notes = overrideNote;
+                      store['saveState']();
+                      setActiveStageLog({ ...res });
+                      setActionMessage(`✓ Manager override accepted. Input weight ${inputWeight} kg saved with justification logged.`);
+                      setTimeout(() => setActionMessage(null), 6000);
+                    }
                     setApprovalPending(false);
                     setApprovalReason('');
-                    await fetchPipelineData();
                   }}
                   className="px-4 py-1.5 rounded text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white transition"
                 >
@@ -811,7 +609,7 @@ export default function ProductionPipelinePage() {
                             <span className="font-mono text-slate-500">[{stage.machine_scale_id}]</span>
                           )}
                           {(() => {
-                            const movedBatches = batchTransfers.filter((b) => b.from_stage_id === stage.id);
+                            const movedBatches = store.getBatchTransfers(selectedRun?.id).filter((b) => b.from_stage_id === stage.id);
                             if (movedBatches.length === 0) return null;
                             const totalKg = movedBatches.reduce((s, b) => s + b.weight_kg, 0);
                             return (

@@ -1,106 +1,55 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
+import { ErpStore } from '@/lib/db/erpStore';
+import { Profile, ProductionStageLog } from '@/lib/types/erp';
 import { Badge } from '@/components/ui/Badge';
 import {
   GitBranch,
   CheckCircle2,
   Clock,
   Layers,
+  ChevronRight,
+  AlertCircle,
 } from 'lucide-react';
-
-interface StageLogItem {
-  id: string;
-  production_run_id: string;
-  stage_name: string;
-  stage_order: number;
-  department_id: string | null;
-  department_name?: string;
-  input_weight_kg: number;
-  output_weight_kg: number;
-  loss_kg: number;
-  loss_pct: number;
-  assigned_to: string | null;
-  status: 'pending' | 'in_progress' | 'done';
-  completed_at: string | null;
-  notes: string | null;
-  discrepancy_status?: string;
-}
 
 export default function EmployeePipelinePage() {
   const router = useRouter();
-  const supabase = createClient();
+  const store = ErpStore.getInstance();
 
   const [isMounted, setIsMounted] = useState(false);
-  const [userDeptName, setUserDeptName] = useState('Floor Operations');
-  const [userDeptId, setUserDeptId] = useState<string | null>(null);
-  const [myStages, setMyStages] = useState<StageLogItem[]>([]);
-  const [allStageLogs, setAllStageLogs] = useState<StageLogItem[]>([]);
+  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
+  const [myStages, setMyStages] = useState<ProductionStageLog[]>([]);
+  const [allStageLogs, setAllStageLogs] = useState<ProductionStageLog[]>([]);
 
   useEffect(() => {
-    let isSubscribed = true;
     setIsMounted(true);
+    const refresh = () => {
+      const u = store.getCurrentUser();
+      setCurrentUser(u);
 
-    const localRole = (typeof window !== 'undefined' && localStorage.getItem('knitnect_user_role')) || 'employee';
-    if (localRole !== 'employee') {
-      router.push('/pipeline');
-      return;
-    }
-    setUserDeptName('Cutting');
-    setUserDeptId('10000000-0000-0000-0000-000000000006');
-
-    const loadData = async () => {
-      try {
-        const supabase = createClient();
-        const { data, error } = await supabase
-          .from('production_stage_logs')
-          .select(`
-            *,
-            departments (
-              name
-            )
-          `)
-          .order('stage_order', { ascending: true });
-
-        if (error) {
-          console.error('Error fetching stage logs:', error);
-          return;
-        }
-
-        if (data && isSubscribed) {
-          const logs: StageLogItem[] = data.map((d: any) => ({
-            id: d.id,
-            production_run_id: d.production_run_id,
-            stage_name: d.stage_name,
-            stage_order: d.stage_order,
-            department_id: d.department_id,
-            department_name: d.departments?.name || 'Production',
-            input_weight_kg: Number(d.input_weight_kg || 0),
-            output_weight_kg: Number(d.output_weight_kg || 0),
-            loss_kg: Number(d.loss_kg || 0),
-            loss_pct: Number(d.loss_pct || 0),
-            assigned_to: d.assigned_to,
-            status: d.status,
-            completed_at: d.completed_at,
-            notes: d.stage_notes,
-            discrepancy_status: d.discrepancy_status,
-          }));
-          setAllStageLogs(logs);
-          const cuttingDeptId = '10000000-0000-0000-0000-000000000006';
-          setMyStages(logs.filter((l) => l.department_id === cuttingDeptId));
-        }
-      } catch {
-        // ignore
+      if (u.role !== 'employee') {
+        router.push('/pipeline');
+        return;
       }
-    };
-    loadData();
 
-    return () => {
-      isSubscribed = false;
+      const logs = store['state'].stageLogs;
+      setAllStageLogs(logs);
+
+      // STRICT: Employee sees only stages assigned to them OR stages in their department
+      const relevantStages = logs.filter(
+        (l) =>
+          l.assigned_to === u.id ||
+          l.department_id === u.department_id
+      );
+      setMyStages(relevantStages.sort((a, b) => a.stage_order - b.stage_order));
     };
-  }, [router]);
+
+    refresh();
+    const unsub = store.subscribe(refresh);
+    return unsub;
+  }, [store, router]);
 
   if (!isMounted) {
     return (
@@ -116,6 +65,8 @@ export default function EmployeePipelinePage() {
   const completedCount = allStageLogs.filter((s) => s.status === 'done').length;
   const progressPct = totalStages > 0 ? Math.round((completedCount / totalStages) * 100) : 0;
 
+  const myCompletedCount = myStages.filter((s) => s.status === 'done').length;
+
   return (
     <div className="space-y-6 animate-fadeInUp">
       {/* Header */}
@@ -127,7 +78,7 @@ export default function EmployeePipelinePage() {
           <div>
             <h1 className="text-lg font-bold text-white tracking-tight">My Pipeline</h1>
             <p className="text-xs text-slate-400 mt-0.5">
-              {userDeptName} · Stage completion status
+              {currentUser.department_name || 'Floor Operations'} · Stage completion status
             </p>
           </div>
         </div>
@@ -175,7 +126,7 @@ export default function EmployeePipelinePage() {
         <div className="section-header mb-3">
           My Department Stages
           <span className="ml-2 text-slate-600 normal-case font-normal text-[10px]">
-            ({userDeptName})
+            ({currentUser.department_name || 'Cutting'})
           </span>
         </div>
 
@@ -287,7 +238,7 @@ export default function EmployeePipelinePage() {
                 {allStageLogs.map((stage) => {
                   const isDone = stage.status === 'done';
                   const isActive = stage.status === 'in_progress';
-                  const isMyDept = stage.department_id === userDeptId;
+                  const isMyDept = stage.department_id === currentUser.department_id;
 
                   return (
                     <tr

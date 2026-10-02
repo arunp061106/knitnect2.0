@@ -1,23 +1,21 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
-import { DispatchRecord, ProductionRun, Style, ProductionStageLog } from '@/lib/types/erp';
+import { ErpStore } from '@/lib/db/erpStore';
+import { DispatchRecord, Profile, ProductionRun, Style } from '@/lib/types/erp';
 import { Badge } from '@/components/ui/Badge';
-import { exportToExcel } from '@/lib/excel/excelExport';
-import { Truck, Plus, CheckCircle2, Download, AlertTriangle } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { Truck, Plus, CheckCircle2, ArrowRight, DollarSign, Calendar, Download, AlertTriangle } from 'lucide-react';
 
 export default function DispatchPage() {
   const router = useRouter();
-  const supabase = createClient();
+  const store = ErpStore.getInstance();
 
-  const [currentUserId, setCurrentUserId] = useState<string>('');
+  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
   const [dispatchRecords, setDispatchRecords] = useState<DispatchRecord[]>([]);
   const [styles, setStyles] = useState<Style[]>([]);
   const [runs, setRuns] = useState<ProductionRun[]>([]);
-  const [stageLogs, setStageLogs] = useState<ProductionStageLog[]>([]);
-  const [loading, setLoading] = useState(true);
 
   // Create Dispatch Record Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -30,110 +28,31 @@ export default function DispatchPage() {
 
   const [feedback, setFeedback] = useState<string | null>(null);
 
-  const fetchData = useCallback(async () => {
-    try {
-      // 1. Fetch dispatch records with styles & payments
-      const { data: dispData, error: dispErr } = await supabase
-        .from('dispatch_records')
-        .select(`
-          *,
-          styles (
-            style_number,
-            offer_no
-          ),
-          payment_records (
-            id,
-            status,
-            bank_name
-          )
-        `)
-        .order('created_at', { ascending: false });
-
-      if (dispErr) console.error('Error fetching dispatches:', dispErr);
-      if (dispData) {
-        setDispatchRecords(
-          dispData.map((d: any) => ({
-            ...d,
-            style_number: d.styles?.style_number || 'N/A',
-            offer_no: d.styles?.offer_no || '',
-            payment: d.payment_records?.[0] || undefined,
-          }))
-        );
-      }
-
-      // 2. Fetch styles
-      const { data: sData, error: sErr } = await supabase
-        .from('styles')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (sErr) console.error('Error fetching styles:', sErr);
-      if (sData) setStyles(sData as Style[]);
-
-      // 3. Fetch production runs
-      const { data: rData, error: rErr } = await supabase
-        .from('production_runs')
-        .select('*, styles(style_number)')
-        .order('created_at', { ascending: false });
-
-      if (rErr) console.error('Error fetching production runs:', rErr);
-      if (rData) {
-        setRuns(
-          rData.map((r: any) => ({
-            ...r,
-            style_number: r.styles?.style_number || r.style_number || 'N/A',
-          }))
-        );
-      }
-
-      // 4. Fetch production stage logs
-      const { data: stData, error: stErr } = await supabase
-        .from('production_stage_logs')
-        .select('*')
-        .order('stage_order', { ascending: true });
-
-      if (stErr) console.error('Error fetching stage logs:', stErr);
-      if (stData) setStageLogs(stData as ProductionStageLog[]);
-    } finally {
-      setLoading(false);
-    }
-  }, [supabase]);
-
   useEffect(() => {
-    const init = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+    const user = store.getCurrentUser();
+    if (user.role === 'employee') {
+      router.replace('/employee/tasks');
+      return;
+    }
 
-      if (!user) {
-        router.replace('/login');
-        return;
-      }
-
-      setCurrentUserId(user.id);
-
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', user.id)
-        .single();
-
-      if (!profile || profile.role === 'employee') {
-        router.replace('/employee/tasks');
-        return;
-      }
-
-      await fetchData();
+    const refresh = () => {
+      const u = store.getCurrentUser();
+      setCurrentUser(u);
+      setDispatchRecords(store.getDispatchRecords(u.role));
+      setStyles(store.getStyles(u.role));
+      setRuns(store['state'].productionRuns);
     };
 
-    init();
-  }, [supabase, router, fetchData]);
+    refresh();
+    const unsub = store.subscribe(refresh);
+    return unsub;
+  }, [store, router]);
 
-  const handleCreateDispatch = async (e: React.FormEvent) => {
+  const handleCreateDispatch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedRunId) return;
 
-    const runStages = stageLogs.filter((s) => s.production_run_id === selectedRunId);
+    const runStages = store['state'].stageLogs.filter((s) => s.production_run_id === selectedRunId);
     const completedStages = runStages.filter((s) => s.status === 'done').length;
     const isComplete = runStages.length > 0 && completedStages === runStages.length;
 
@@ -145,103 +64,60 @@ export default function DispatchPage() {
     }
 
     const run = runs.find((r) => r.id === selectedRunId);
+    const style = styles.find((s) => s.id === run?.style_id);
 
-    const { error } = await supabase.from('dispatch_records').insert({
-      production_run_id: selectedRunId,
-      style_id: run?.style_id || '',
-      transport_cost: Number(transportCost),
-      fob_value: Number(fobValue),
-      forwarding_cost: Number(forwardingCost),
-      dispatch_date: dispatchDate,
-      status: 'pending',
-      notes: dispatchNotes,
-    });
-
-    if (error) {
-      alert('Failed to log dispatch: ' + error.message);
-      return;
-    }
-
-    await supabase.from('audit_log').insert({
-      user_id: currentUserId,
-      action: 'CREATE',
-      table_name: 'dispatch_records',
-      notes: `Created dispatch order for style ${run?.style_number || ''}`,
-    });
+    store.saveDispatchRecord(
+      {
+        production_run_id: selectedRunId,
+        style_id: run?.style_id || '',
+        style_number: run?.style_number,
+        offer_no: style?.offer_no,
+        transport_cost: Number(transportCost),
+        fob_value: Number(fobValue),
+        forwarding_cost: Number(forwardingCost),
+        dispatch_date: dispatchDate,
+        status: 'pending',
+        notes: dispatchNotes,
+      },
+      currentUser.id
+    );
 
     setIsModalOpen(false);
     setSelectedRunId('');
     setFeedback('Dispatch consignment logged successfully. Goods released for transport.');
     setTimeout(() => setFeedback(null), 3000);
-    await fetchData();
   };
 
-  const handleUpdateStatus = async (id: string, newStatus: 'pending' | 'dispatched' | 'delivered') => {
-    const { error } = await supabase
-      .from('dispatch_records')
-      .update({ status: newStatus })
-      .eq('id', id);
-
-    if (error) {
-      alert('Failed to update status: ' + error.message);
-      return;
-    }
-
-    await supabase.from('audit_log').insert({
-      user_id: currentUserId,
-      action: 'UPDATE',
-      table_name: 'dispatch_records',
-      record_id: id,
-      notes: `Updated dispatch status to ${newStatus}`,
-    });
-
+  const handleUpdateStatus = (id: string, newStatus: 'pending' | 'dispatched' | 'delivered') => {
+    store.updateDispatchRecord(id, { status: newStatus });
     setFeedback(`Dispatch status updated to "${newStatus.toUpperCase()}".`);
     setTimeout(() => setFeedback(null), 3000);
-    await fetchData();
   };
 
-  const totalFobValue = dispatchRecords.reduce((sum, d) => sum + (Number(d.fob_value) || 0), 0);
+  const totalFobValue = dispatchRecords.reduce((sum, d) => sum + (d.fob_value || 0), 0);
   const totalFreight = dispatchRecords.reduce(
-    (sum, d) => sum + (Number(d.transport_cost) || 0) + (Number(d.forwarding_cost) || 0),
+    (sum, d) => sum + (d.transport_cost || 0) + (d.forwarding_cost || 0),
     0
   );
 
-  const handleExportDispatchExcel = async () => {
+  const handleExportDispatchExcel = () => {
     try {
+      const wb = XLSX.utils.book_new();
       const rows = dispatchRecords.map((d) => ({
-        id: d.id,
-        style_number: d.style_number,
-        offer_no: d.offer_no || '',
-        dispatch_date: d.dispatch_date,
-        transport_cost: Number(d.transport_cost) || 0,
-        forwarding_cost: Number(d.forwarding_cost) || 0,
-        fob_value: Number(d.fob_value) || 0,
-        total_cost: (Number(d.transport_cost) || 0) + (Number(d.forwarding_cost) || 0),
-        status: (d.status || '').toUpperCase(),
-        notes: d.notes || '',
+        'Record ID': d.id,
+        'Style Number': d.style_number,
+        'Offer No': d.offer_no || '',
+        'Dispatch Date': d.dispatch_date,
+        'Transport Cost (INR)': d.transport_cost,
+        'Forwarding Cost (INR)': d.forwarding_cost,
+        'FOB Value (INR)': d.fob_value,
+        'Total Logistics Cost (INR)': d.transport_cost + d.forwarding_cost,
+        'Status': d.status.toUpperCase(),
+        'Notes': d.notes || '',
       }));
-
-      await exportToExcel(
-        [
-          {
-            name: 'Dispatch Register',
-            columns: [
-              { header: 'Record ID', key: 'id', width: 22 },
-              { header: 'Style Number', key: 'style_number', width: 16 },
-              { header: 'Offer No', key: 'offer_no', width: 16 },
-              { header: 'Dispatch Date', key: 'dispatch_date', width: 15 },
-              { header: 'Transport Cost (INR)', key: 'transport_cost', width: 20 },
-              { header: 'Forwarding Cost (INR)', key: 'forwarding_cost', width: 20 },
-              { header: 'FOB Value (INR)', key: 'fob_value', width: 18 },
-              { header: 'Total Logistics Cost (INR)', key: 'total_cost', width: 22 },
-              { header: 'Status', key: 'status', width: 14 },
-              { header: 'Notes', key: 'notes', width: 25 },
-            ],
-            rows,
-          },
-        ],
-        'Dispatch-Logistics-Register.xlsx'
-      );
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, 'Dispatch Register');
+      XLSX.writeFile(wb, `Dispatch-Logistics-Register.xlsx`);
       setFeedback('Dispatch register exported successfully to Excel (.xlsx)!');
       setTimeout(() => setFeedback(null), 4000);
     } catch (err) {
@@ -249,14 +125,6 @@ export default function DispatchPage() {
       alert('Dispatch exported.');
     }
   };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="text-slate-400 text-xs">Loading dispatch & logistics register...</div>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6">
@@ -329,24 +197,17 @@ export default function DispatchPage() {
         <div className="kpi-card">
           <div className="kpi-label">Production Pipeline Gate</div>
           <div className="kpi-value text-sky-400 flex items-center gap-2">
-            <span>
-              {
-                runs.filter((r) => {
-                  const stages = stageLogs.filter((s) => s.production_run_id === r.id);
-                  return stages.length > 0 && stages.every((s) => s.status === 'done');
-                }).length
-              }
-            </span>
+            <span>{runs.filter(r => {
+              const stages = store['state'].stageLogs.filter(s => s.production_run_id === r.id);
+              return stages.length > 0 && stages.every(s => s.status === 'done');
+            }).length}</span>
             <span className="text-xs font-normal text-slate-400">ready</span>
           </div>
           <div className="text-[11px] text-slate-500 mt-1">
-            {
-              runs.filter((r) => {
-                const stages = stageLogs.filter((s) => s.production_run_id === r.id);
-                return stages.some((s) => s.status !== 'done');
-              }).length
-            }{' '}
-            still in production on floor
+            {runs.filter(r => {
+              const stages = store['state'].stageLogs.filter(s => s.production_run_id === r.id);
+              return stages.some(s => s.status !== 'done');
+            }).length} still in production on floor
           </div>
         </div>
       </div>
@@ -378,8 +239,8 @@ export default function DispatchPage() {
                 </tr>
               ) : (
                 dispatchRecords.map((d) => {
-                  const runStages = stageLogs.filter((s) => s.production_run_id === d.production_run_id);
-                  const completedCount = runStages.filter((s) => s.status === 'done').length;
+                  const runStages = store['state'].stageLogs.filter(s => s.production_run_id === d.production_run_id);
+                  const completedCount = runStages.filter(s => s.status === 'done').length;
                   const is100Done = runStages.length > 0 && completedCount === runStages.length;
 
                   return (
@@ -401,13 +262,13 @@ export default function DispatchPage() {
                       </td>
                       <td className="mono-num text-slate-300 whitespace-nowrap">{d.dispatch_date}</td>
                       <td className="mono-num font-bold text-emerald-400 whitespace-nowrap">
-                        ₹{Number(d.fob_value)?.toLocaleString() || 0}
+                        ₹{d.fob_value?.toLocaleString() || 0}
                       </td>
                       <td className="mono-num text-slate-300 whitespace-nowrap">
-                        ₹{Number(d.transport_cost)?.toLocaleString() || 0}
+                        ₹{d.transport_cost?.toLocaleString() || 0}
                       </td>
                       <td className="mono-num text-slate-300 whitespace-nowrap">
-                        ₹{Number(d.forwarding_cost)?.toLocaleString() || 0}
+                        ₹{d.forwarding_cost?.toLocaleString() || 0}
                       </td>
                       <td className="whitespace-nowrap">
                         <Badge
@@ -493,7 +354,7 @@ export default function DispatchPage() {
                 >
                   <option value="">-- Choose production run --</option>
                   {runs.map((r) => {
-                    const runStages = stageLogs.filter((s) => s.production_run_id === r.id);
+                    const runStages = store['state'].stageLogs.filter((s) => s.production_run_id === r.id);
                     const completed = runStages.filter((s) => s.status === 'done').length;
                     const total = runStages.length;
                     const isAllDone = total > 0 && completed === total;
@@ -515,7 +376,8 @@ export default function DispatchPage() {
               {/* Compute selected run's real pipeline completion status */}
               {(() => {
                 if (!selectedRunId) return null;
-                const runStages = stageLogs
+                const selectedRun = runs.find((r) => r.id === selectedRunId);
+                const runStages = store['state'].stageLogs
                   .filter((s) => s.production_run_id === selectedRunId)
                   .sort((a, b) => a.stage_order - b.stage_order);
                 const completedStages = runStages.filter((s) => s.status === 'done').length;
@@ -639,7 +501,7 @@ export default function DispatchPage() {
                   disabled={
                     !selectedRunId ||
                     (() => {
-                      const runStages = stageLogs.filter((s) => s.production_run_id === selectedRunId);
+                      const runStages = store['state'].stageLogs.filter((s) => s.production_run_id === selectedRunId);
                       const completed = runStages.filter((s) => s.status === 'done').length;
                       const isAllDone = runStages.length > 0 && completed === runStages.length;
                       const existing = dispatchRecords.find((d) => d.production_run_id === selectedRunId);
@@ -650,7 +512,7 @@ export default function DispatchPage() {
                 >
                   {(() => {
                     if (!selectedRunId) return 'Select Production Run';
-                    const runStages = stageLogs.filter((s) => s.production_run_id === selectedRunId);
+                    const runStages = store['state'].stageLogs.filter((s) => s.production_run_id === selectedRunId);
                     const completed = runStages.filter((s) => s.status === 'done').length;
                     const isAllDone = runStages.length > 0 && completed === runStages.length;
                     const existing = dispatchRecords.find((d) => d.production_run_id === selectedRunId);

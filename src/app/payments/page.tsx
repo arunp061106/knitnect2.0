@@ -1,28 +1,30 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
-import { PaymentRecord, DispatchRecord, Style } from '@/lib/types/erp';
+import { ErpStore } from '@/lib/db/erpStore';
+import { PaymentRecord, Profile, DispatchRecord, Style } from '@/lib/types/erp';
 import { Badge } from '@/components/ui/Badge';
-import { exportToExcel } from '@/lib/excel/excelExport';
+import * as XLSX from 'xlsx';
 import {
   CreditCard,
   Plus,
   CheckCircle2,
+  DollarSign,
+  TrendingUp,
   Landmark,
+  Building,
   Download,
 } from 'lucide-react';
 
 export default function PaymentsPage() {
   const router = useRouter();
-  const supabase = createClient();
+  const store = ErpStore.getInstance();
 
-  const [currentUserId, setCurrentUserId] = useState<string>('');
+  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [dispatchRecords, setDispatchRecords] = useState<DispatchRecord[]>([]);
   const [styles, setStyles] = useState<Style[]>([]);
-  const [loading, setLoading] = useState(true);
 
   // Record Payment Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -37,83 +39,27 @@ export default function PaymentsPage() {
 
   const [feedback, setFeedback] = useState<string | null>(null);
 
-  const fetchData = useCallback(async () => {
-    try {
-      const { data: pData, error: pErr } = await supabase
-        .from('payment_records')
-        .select('*, styles(style_number)')
-        .order('payment_date', { ascending: false });
-
-      if (pErr) console.error('Error fetching payments:', pErr);
-      if (pData) {
-        setPayments(
-          pData.map((p: any) => ({
-            ...p,
-            style_number: p.styles?.style_number || 'N/A',
-          }))
-        );
-      }
-
-      const { data: dData, error: dErr } = await supabase
-        .from('dispatch_records')
-        .select('*, styles(style_number)')
-        .order('created_at', { ascending: false });
-
-      if (dErr) console.error('Error fetching dispatches:', dErr);
-      if (dData) {
-        setDispatchRecords(
-          dData.map((d: any) => ({
-            ...d,
-            style_number: d.styles?.style_number || 'N/A',
-          }))
-        );
-      }
-
-      const { data: sData, error: sErr } = await supabase
-        .from('styles')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (sErr) console.error('Error fetching styles:', sErr);
-      if (sData) {
-        setStyles(sData as Style[]);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [supabase]);
-
   useEffect(() => {
-    const init = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+    const user = store.getCurrentUser();
+    if (user.role === 'employee') {
+      router.replace('/employee/tasks');
+      return;
+    }
 
-      if (!user) {
-        router.replace('/login');
-        return;
-      }
-
-      setCurrentUserId(user.id);
-
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', user.id)
-        .single();
-
-      if (!profile || profile.role === 'employee') {
-        router.replace('/employee/tasks');
-        return;
-      }
-
-      await fetchData();
+    const refresh = () => {
+      const u = store.getCurrentUser();
+      setCurrentUser(u);
+      setPayments(store.getPaymentRecords(u.role));
+      setDispatchRecords(store.getDispatchRecords(u.role));
+      setStyles(store.getStyles(u.role));
     };
 
-    init();
-  }, [supabase, router, fetchData]);
+    refresh();
+    const unsub = store.subscribe(refresh);
+    return unsub;
+  }, [store, router]);
 
-  const handleRecordPayment = async (e: React.FormEvent) => {
+  const handleRecordPayment = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedDispatchId || !transactionId || amountTransferred <= 0) {
       alert('Please fill in transaction ID and amount transferred.');
@@ -121,80 +67,49 @@ export default function PaymentsPage() {
     }
 
     const dispatch = dispatchRecords.find((d) => d.id === selectedDispatchId);
-    const netReceived = Number(amountTransferred) - Number(bankCharges);
 
-    const { error } = await supabase.from('payment_records').insert({
-      dispatch_id: selectedDispatchId,
-      style_id: dispatch?.style_id || '',
-      bank_name: bankName.trim(),
-      transaction_id: transactionId.trim(),
-      amount_transferred: Number(amountTransferred),
-      bank_charges: Number(bankCharges),
-      net_received: netReceived,
-      payment_date: paymentDate,
-      status: paymentStatus,
-      notes: paymentNotes,
-    });
-
-    if (error) {
-      alert('Failed to record payment: ' + error.message);
-      return;
-    }
-
-    // Optional audit log entry
-    await supabase.from('audit_log').insert({
-      user_id: currentUserId,
-      action: 'CREATE',
-      table_name: 'payment_records',
-      notes: `Recorded remittance of ₹${amountTransferred} (ref: ${transactionId})`,
-    });
+    store.recordPayment(
+      {
+        dispatch_id: selectedDispatchId,
+        style_id: dispatch?.style_id || '',
+        bank_name: bankName.trim(),
+        transaction_id: transactionId.trim(),
+        amount_transferred: Number(amountTransferred),
+        bank_charges: Number(bankCharges),
+        payment_date: paymentDate,
+        status: paymentStatus,
+        notes: paymentNotes,
+      },
+      currentUser.id
+    );
 
     setIsModalOpen(false);
     setTransactionId('');
-    setPaymentNotes('');
     setFeedback('Payment remittance recorded successfully.');
     setTimeout(() => setFeedback(null), 3000);
-    await fetchData();
   };
 
-  const totalTransferred = payments.reduce((sum, p) => sum + (Number(p.amount_transferred) || 0), 0);
-  const totalNetReceived = payments.reduce((sum, p) => sum + (Number(p.net_received) || 0), 0);
-  const totalBankCharges = payments.reduce((sum, p) => sum + (Number(p.bank_charges) || 0), 0);
+  const totalTransferred = payments.reduce((sum, p) => sum + (p.amount_transferred || 0), 0);
+  const totalNetReceived = payments.reduce((sum, p) => sum + (p.net_received || 0), 0);
+  const totalBankCharges = payments.reduce((sum, p) => sum + (p.bank_charges || 0), 0);
 
-  const handleExportPaymentsExcel = async () => {
+  const handleExportPaymentsExcel = () => {
     try {
+      const wb = XLSX.utils.book_new();
       const rows = payments.map((p) => ({
-        id: p.id,
-        bank_name: p.bank_name,
-        transaction_id: p.transaction_id,
-        payment_date: p.payment_date,
-        gross_amount: Number(p.amount_transferred) || 0,
-        bank_charges: Number(p.bank_charges) || 0,
-        net_realized: (Number(p.amount_transferred) || 0) - (Number(p.bank_charges) || 0),
-        status: (p.status || '').toUpperCase(),
-        notes: p.notes || '',
+        'Payment ID': p.id,
+        'Bank Name': p.bank_name,
+        'Transaction ID': p.transaction_id,
+        'Payment Date': p.payment_date,
+        'Gross Amount (INR)': p.amount_transferred,
+        'Bank Charges (INR)': p.bank_charges,
+        'Net Realized (INR)': p.amount_transferred - p.bank_charges,
+        'Reconciliation Status': p.status.toUpperCase(),
+        'Notes': p.notes || '',
       }));
-
-      await exportToExcel(
-        [
-          {
-            name: 'Banking & Payments',
-            columns: [
-              { header: 'Payment ID', key: 'id', width: 22 },
-              { header: 'Bank Name', key: 'bank_name', width: 20 },
-              { header: 'Transaction ID', key: 'transaction_id', width: 22 },
-              { header: 'Payment Date', key: 'payment_date', width: 15 },
-              { header: 'Gross Amount (INR)', key: 'gross_amount', width: 20 },
-              { header: 'Bank Charges (INR)', key: 'bank_charges', width: 18 },
-              { header: 'Net Realized (INR)', key: 'net_realized', width: 20 },
-              { header: 'Reconciliation Status', key: 'status', width: 20 },
-              { header: 'Notes', key: 'notes', width: 25 },
-            ],
-            rows,
-          },
-        ],
-        'Forex-Payments-Transactions.xlsx'
-      );
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, 'Banking & Payments');
+      XLSX.writeFile(wb, `Forex-Payments-Transactions.xlsx`);
       setFeedback('Payments register exported successfully to Excel (.xlsx)!');
       setTimeout(() => setFeedback(null), 4000);
     } catch (err) {
@@ -202,14 +117,6 @@ export default function PaymentsPage() {
       alert('Payments exported.');
     }
   };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="text-slate-400 text-xs">Loading payments & banking records...</div>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6">
@@ -314,13 +221,13 @@ export default function PaymentsPage() {
                     <td className="font-mono text-slate-200">{p.transaction_id}</td>
                     <td className="mono-num text-slate-300">{p.payment_date}</td>
                     <td className="mono-num font-bold text-white">
-                      ₹{(Number(p.amount_transferred) || 0).toLocaleString()}
+                      ₹{p.amount_transferred?.toLocaleString()}
                     </td>
                     <td className="mono-num text-amber-400">
-                      ₹{(Number(p.bank_charges) || 0).toLocaleString()}
+                      ₹{p.bank_charges?.toLocaleString()}
                     </td>
                     <td className="mono-num font-bold text-emerald-400">
-                      ₹{(Number(p.net_received) || 0).toLocaleString()}
+                      ₹{p.net_received?.toLocaleString()}
                     </td>
                     <td>
                       <Badge

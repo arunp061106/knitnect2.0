@@ -18,7 +18,7 @@ export type StyleStatus =
 export type LabDipStatus = 'pending' | 'approved' | 'rejected';
 export type TaskStatus = 'pending' | 'in_progress' | 'completed';
 export type StageStatus = 'pending' | 'in_progress' | 'done';
-export type DispatchStatus = 'pending' | 'dispatched' | 'delivered' | 'partial';
+export type DispatchStatus = 'pending' | 'dispatched' | 'delivered';
 export type PaymentStatus = 'pending' | 'received' | 'reconciled';
 export type PayrollRunStatus = 'draft' | 'approved' | 'disbursed';
 
@@ -54,7 +54,6 @@ export interface Department {
   stage_type: string;
   created_at: string;
   member_count?: number;
-  staff_count?: number;
 }
 
 export interface DepartmentMember {
@@ -126,7 +125,6 @@ export interface StyleFabric {
   dyed_dye_cost: number;
   stenter_cost: number;
   owc_cost: number;
-  wastage_pct?: number; // Fabric wastage allowance percentage (e.g. 3 = 3%)
   created_at: string;
 }
 
@@ -303,9 +301,6 @@ export interface DispatchRecord {
   style_id: string;
   style_number?: string;
   offer_no?: string;
-  order_qty?: number;
-  shipped_qty?: number;
-  is_partial?: boolean;
   transport_cost: number;
   fob_value: number;
   forwarding_cost: number;

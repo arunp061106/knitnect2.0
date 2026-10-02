@@ -1,22 +1,21 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { exportToExcel } from '@/lib/excel/excelExport';
+import * as XLSX from 'xlsx';
 import { formatDateTimeSafe } from '@/lib/utils/format';
-import { createClient } from '@/lib/supabase/client';
+import { ErpStore } from '@/lib/db/erpStore';
 import {
   Style,
   StyleFabric,
   LabDip,
   CostingSheet,
   ProductionRun,
-  ProductionStageLog,
+  Profile,
 } from '@/lib/types/erp';
 import { Badge } from '@/components/ui/Badge';
 import { calculateBulkProjection, calculateBlendedCostPerKg } from '@/lib/domain/costing';
-import { isLabDipGateCleared, isPriceApprovalCleared, getPipelineStagesForStyle } from '@/lib/domain/pipeline';
-import { DEFAULT_BLENDED_FABRIC_COST_PER_KG } from '@/lib/domain/loss';
+import { isLabDipGateCleared, isPriceApprovalCleared } from '@/lib/domain/pipeline';
 import {
   ArrowLeft,
   Layers,
@@ -38,16 +37,11 @@ import {
 export default function StyleDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const supabase = createClient();
+  const store = ErpStore.getInstance();
 
   const styleId = params?.id as string;
-  const [currentUser, setCurrentUser] = useState<{ id: string; role: string; full_name: string }>({
-    id: '',
-    role: 'manager',
-    full_name: '',
-  });
+  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
   const [style, setStyle] = useState<Style | null>(null);
-  const [runStageLogs, setRunStageLogs] = useState<ProductionStageLog[]>([]);
 
   // Active Tab: 'costing' | 'lab_dips' | 'approval' | 'pipeline' | 'excel_viewer'
   const [activeTab, setActiveTab] = useState<'costing' | 'lab_dips' | 'approval' | 'pipeline' | 'excel_viewer'>('costing');
@@ -62,16 +56,12 @@ export default function StyleDetailPage() {
   // Dynamic Price & Specification Editing state (Client & Owner)
   const [isPriceEditMode, setIsPriceEditMode] = useState<boolean>(false);
 
-  const handleUpdatePrice = async (
+  const handleUpdatePrice = (
     fabricId: string,
     field: string,
     value: any
   ) => {
-    await supabase
-      .from('style_fabrics')
-      .update({ [field]: value })
-      .eq('id', fabricId);
-    await fetchStyleData();
+    store.updateStyleFabricRow(fabricId, { [field]: value }, currentUser.id);
   };
 
   // Edit Style Details Modal
@@ -124,13 +114,13 @@ export default function StyleDetailPage() {
     setEfSampleQty(f.sample_qty || 500);
   };
 
-  const handleSaveEditFabric = async (e: React.FormEvent) => {
+  const handleSaveEditFabric = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingFabric) return;
 
-    await supabase
-      .from('style_fabrics')
-      .update({
+    store.updateStyleFabricRow(
+      editingFabric.id,
+      {
         fabric_code: efCode,
         fabric_type: efType,
         colour: efColour,
@@ -148,13 +138,13 @@ export default function StyleDetailPage() {
         stenter_cost: efStenter,
         owc_cost: efOwc,
         sample_qty: efSampleQty,
-      })
-      .eq('id', editingFabric.id);
+      },
+      currentUser.id
+    );
 
     setActionFeedback('Fabric line item updated across all formulas & projections.');
     setEditingFabric(null);
     setTimeout(() => setActionFeedback(null), 4000);
-    await fetchStyleData();
   };
 
   const handleOpenEditStyle = () => {
@@ -168,26 +158,26 @@ export default function StyleDetailPage() {
     setIsEditStyleOpen(true);
   };
 
-  const handleSaveEditStyle = async (e: React.FormEvent) => {
+  const handleSaveEditStyle = (e: React.FormEvent) => {
     e.preventDefault();
     if (!style) return;
 
-    await supabase
-      .from('styles')
-      .update({
+    store.updateStyleDetails(
+      style.id,
+      {
         style_number: editStyleNumber,
         season: editSeason,
         offer_no: editOfferNo,
         description: editDescription,
         garment_process_type: editProcessType,
         status: editStatus,
-      })
-      .eq('id', style.id);
+      },
+      currentUser.id
+    );
 
     setActionFeedback('Style information and workflow status updated successfully.');
     setIsEditStyleOpen(false);
     setTimeout(() => setActionFeedback(null), 4000);
-    await fetchStyleData();
   };
 
   // Add Fabric Modal state
@@ -221,104 +211,23 @@ export default function StyleDetailPage() {
 
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
 
-  const fetchStyleData = useCallback(async () => {
-    const { data: sData, error: sErr } = await supabase
-      .from('styles')
-      .select(`
-        *,
-        style_fabrics (*),
-        lab_dips (*),
-        costing_sheets (*),
-        production_runs (*)
-      `)
-      .eq('id', styleId)
-      .single();
-
-    if (sErr) console.error('Error fetching style:', sErr);
-    if (sData) {
-      const fabrics = (sData.style_fabrics || []).sort((a: any, b: any) => (a.s_no || 0) - (b.s_no || 0));
-      const labDips = (sData.lab_dips || []).sort(
-        (a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-      );
-      const costing = sData.costing_sheets?.[0] || undefined;
-      const currentRun = sData.production_runs?.[0] || undefined;
-
-      const styleObj: Style = {
-        ...sData,
-        fabrics,
-        lab_dips: labDips,
-        costing,
-        current_run: currentRun,
-      };
-      setStyle(styleObj);
-
-      if (costing) {
-        setBulkQty(costing.bulk_target_qty || 5000);
-        setQuotedPriceInput(costing.quoted_price || 0);
-      }
-
-      if (currentRun) {
-        const { data: stLogs } = await supabase
-          .from('production_stage_logs')
-          .select(`
-            *,
-            departments (
-              name
-            )
-          `)
-          .eq('production_run_id', currentRun.id)
-          .order('stage_order', { ascending: true });
-
-        if (stLogs) {
-          setRunStageLogs(
-            stLogs.map((l: any) => ({
-              ...l,
-              department_name: l.departments?.name,
-            }))
-          );
-        }
-      }
-    }
-  }, [supabase, styleId]);
-
   useEffect(() => {
-    const init = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
 
-      if (!user) {
-        router.replace('/login');
-        return;
+    const refresh = () => {
+      const u = store.getCurrentUser();
+      setCurrentUser(u);
+      const s = store.getStyleById(styleId, u.role);
+      setStyle(s);
+      if (s?.costing) {
+        setBulkQty(s.costing.bulk_target_qty || 5000);
+        setQuotedPriceInput(s.costing.quoted_price || 0);
       }
-
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('id, role, full_name')
-        .eq('id', user.id)
-        .single();
-
-      if (!profile) {
-        router.replace('/login');
-        return;
-      }
-
-      if (profile.role === 'employee') {
-        router.replace('/employee/tasks');
-        return;
-      }
-
-      setCurrentUser({
-        id: profile.id,
-        role: profile.role,
-        full_name: profile.full_name || 'Staff',
-      });
-
-      await fetchStyleData();
     };
 
-    init();
-  }, [supabase, router, fetchStyleData]);
+    refresh();
+    const unsub = store.subscribe(refresh);
+    return unsub;
+  }, [styleId, store, router]);
 
   if (!style) {
     return (
@@ -338,26 +247,15 @@ export default function StyleDetailPage() {
   const labDipGate = isLabDipGateCleared(labDips);
   const priceApprovalGate = isPriceApprovalCleared(costing);
 
-  const handleSaveQuotedPrice = async () => {
-    if (!style) return;
-    await supabase
-      .from('costing_sheets')
-      .upsert(
-        {
-          style_id: style.id,
-          quoted_price: quotedPriceInput,
-          bulk_target_qty: bulkQty,
-        },
-        { onConflict: 'style_id' }
-      );
-
+  const handleSaveQuotedPrice = () => {
+    store.updateQuotedPrice(style.id, quotedPriceInput, currentUser.id);
     setActionFeedback('Quoted price updated.');
     setTimeout(() => setActionFeedback(null), 3000);
-    await fetchStyleData();
   };
 
   const handleExportCostingExcel = () => {
     try {
+      const wb = XLSX.utils.book_new();
       const rows = fabrics.map((f) => {
         const procCost =
           (f.knitting_cost || 0) +
@@ -367,74 +265,39 @@ export default function StyleDetailPage() {
           (f.stenter_cost || 0) +
           (f.owc_cost || 0);
         return {
-          fabric_code: f.fabric_code,
-          fabric_type: f.fabric_type,
-          colour: f.colour,
-          quality: f.quality,
-          composition: f.composition,
-          gsm: f.gsm,
-          pc_wt: f.pc_wt,
-          yarn_count: f.yarn_count,
-          yarn_price: f.yarn_price,
-          consume_pct: `${(f.consume_pct * 100).toFixed(0)}%`,
-          effective_yarn_cost: f.effective_yarn_cost,
-          knitting_cost: f.knitting_cost,
-          solid_dye_cost: f.solid_dye_cost,
-          dyed_dye_cost: f.dyed_dye_cost,
-          stenter_owc: (f.stenter_cost || 0) + (f.owc_cost || 0),
-          total_cost: Number(((f.effective_yarn_cost || 0) + procCost).toFixed(2)),
+          'Fabric Code': f.fabric_code,
+          'Type': f.fabric_type,
+          'Colour': f.colour,
+          'Quality': f.quality,
+          'Composition': f.composition,
+          'GSM': f.gsm,
+          'Pc Wt (kg)': f.pc_wt,
+          'Yarn Count': f.yarn_count,
+          'Yarn Price (INR)': f.yarn_price,
+          'Consume %': `${(f.consume_pct * 100).toFixed(0)}%`,
+          'Effective Yarn Cost (INR)': f.effective_yarn_cost,
+          'Knitting Rate (INR)': f.knitting_cost,
+          'Solid Dye Rate (INR)': f.solid_dye_cost,
+          'Dyed Dye Rate (INR)': f.dyed_dye_cost,
+          'Stenter / OWC Rate (INR)': (f.stenter_cost || 0) + (f.owc_cost || 0),
+          'Total Cost / kg (INR)': Number(((f.effective_yarn_cost || 0) + procCost).toFixed(2)),
         };
       });
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, 'Fabric Costing');
 
       const projRows = projection.fabrics.map((p) => ({
-        fabric_code: p.fabricCode,
-        bulk_fabric_kg: p.bulkFabricKg,
-        yarn_total_cost: p.yarnTotalCost,
-        processing_total_cost: p.processingTotalCost,
-        fabric_total_cost: p.fabricTotalCost,
-        cost_per_piece: p.fabricCostPerPiece,
+        'Fabric Code': p.fabricCode,
+        'Bulk Fabric Req (kg)': p.bulkFabricKg,
+        'Yarn Total Cost (INR)': p.yarnTotalCost,
+        'Processing Total Cost (INR)': p.processingTotalCost,
+        'Fabric Total Cost (INR)': p.fabricTotalCost,
+        'Cost Per Piece (INR)': p.fabricCostPerPiece,
       }));
+      const wsProj = XLSX.utils.json_to_sheet(projRows);
+      XLSX.utils.book_append_sheet(wb, wsProj, 'Bulk Projections');
 
-      exportToExcel(
-        [
-          {
-            name: 'Fabric Costing',
-            columns: [
-              { header: 'Fabric Code', key: 'fabric_code', width: 16 },
-              { header: 'Type', key: 'fabric_type', width: 12 },
-              { header: 'Colour', key: 'colour', width: 20 },
-              { header: 'Quality', key: 'quality', width: 22 },
-              { header: 'Composition', key: 'composition', width: 20 },
-              { header: 'GSM', key: 'gsm', width: 10 },
-              { header: 'Pc Wt (kg)', key: 'pc_wt', width: 14 },
-              { header: 'Yarn Count', key: 'yarn_count', width: 14 },
-              { header: 'Yarn Price (INR)', key: 'yarn_price', width: 16 },
-              { header: 'Consume %', key: 'consume_pct', width: 14 },
-              { header: 'Effective Yarn Cost', key: 'effective_yarn_cost', width: 18 },
-              { header: 'Knitting Rate', key: 'knitting_cost', width: 14 },
-              { header: 'Solid Dye Rate', key: 'solid_dye_cost', width: 14 },
-              { header: 'Dyed Dye Rate', key: 'dyed_dye_cost', width: 14 },
-              { header: 'Stenter / OWC', key: 'stenter_owc', width: 14 },
-              { header: 'Total Cost / kg', key: 'total_cost', width: 16 },
-            ],
-            rows,
-          },
-          {
-            name: 'Bulk Projections',
-            columns: [
-              { header: 'Fabric Code', key: 'fabric_code', width: 16 },
-              { header: 'Bulk Fabric Req (kg)', key: 'bulk_fabric_kg', width: 20 },
-              { header: 'Yarn Total Cost (INR)', key: 'yarn_total_cost', width: 20 },
-              { header: 'Processing Total Cost (INR)', key: 'processing_total_cost', width: 22 },
-              { header: 'Fabric Total Cost (INR)', key: 'fabric_total_cost', width: 20 },
-              { header: 'Cost Per Piece (INR)', key: 'cost_per_piece', width: 18 },
-            ],
-            rows: projRows,
-          },
-        ],
-        `Costing-Projections-${style?.style_number || 'Style'}.xlsx`
-      );
-
+      XLSX.writeFile(wb, `Costing-Projections-${style?.style_number || 'Style'}.xlsx`);
       setActionFeedback('Costing & Bulk projections exported to Excel (.xlsx)!');
       setTimeout(() => setActionFeedback(null), 4000);
     } catch (err) {
@@ -443,127 +306,30 @@ export default function StyleDetailPage() {
     }
   };
 
-  const handleApprovePrice = async () => {
-    if (!style) return;
-    const approvedPrice = quotedPriceInput || projection.costPerPiece;
-    await supabase
-      .from('costing_sheets')
-      .upsert(
-        {
-          style_id: style.id,
-          approved_price: approvedPrice,
-          final_price_approved_by: currentUser.id,
-          approved_at: new Date().toISOString(),
-          approval_notes: approvalNotes,
-        },
-        { onConflict: 'style_id' }
-      );
-
-    await supabase.from('audit_log').insert({
-      user_id: currentUser.id,
-      action: 'PRICE_APPROVAL',
-      table_name: 'costing_sheets',
-      record_id: style.id,
-      notes: `Approved quoted price ₹${approvedPrice} for style ${style.style_number}`,
-    });
-
-    setActionFeedback(`Final costing approved at ₹${approvedPrice} per garment piece.`);
+  const handleApprovePrice = () => {
+    const res = store.approveFinalPrice(
+      style.id,
+      quotedPriceInput || projection.costPerPiece,
+      currentUser.id,
+      approvalNotes
+    );
+    setActionFeedback(res.message);
     setTimeout(() => setActionFeedback(null), 4000);
-    await fetchStyleData();
   };
 
-  const handleActivatePipeline = async (runType: 'sample' | 'bulk') => {
-    if (!style) return;
-    if (currentUser.role !== 'owner' && currentUser.role !== 'manager') {
-      alert('Unauthorized: Only Owner or Manager can activate production.');
-      return;
+  const handleActivatePipeline = (runType: 'sample' | 'bulk') => {
+    const res = store.activateProductionPipeline(style.id, currentUser.id, bulkQty, runType);
+    if (res.success) {
+      setActionFeedback(res.message);
+      setActiveTab('pipeline');
+    } else {
+      alert(res.message);
     }
-
-    const labDipCheck = isLabDipGateCleared(labDips);
-    if (!labDipCheck.cleared) {
-      alert(`Lab Dip Gate Blocked: ${labDipCheck.reason}`);
-      return;
-    }
-
-    const priceCheck = isPriceApprovalCleared(costing);
-    if (!priceCheck.cleared) {
-      alert(`Price Approval Gate Blocked: ${priceCheck.reason}`);
-      return;
-    }
-
-    const stages = getPipelineStagesForStyle(style.garment_process_type, style.garment_season_type);
-    const calculatedBlended = calculateBlendedCostPerKg(fabrics);
-    const blendedCost = calculatedBlended > 0 ? calculatedBlended : DEFAULT_BLENDED_FABRIC_COST_PER_KG;
-
-    // Insert production run
-    const { data: newRun, error: rErr } = await supabase
-      .from('production_runs')
-      .insert({
-        style_id: style.id,
-        org_id: style.org_id,
-        run_type: runType,
-        current_stage_order: 1,
-        current_stage_name: stages[0].name,
-        status: 'in_progress',
-        target_qty: bulkQty,
-        blended_cost_per_kg: blendedCost,
-        start_date: new Date().toISOString().split('T')[0],
-      })
-      .select()
-      .single();
-
-    if (rErr || !newRun) {
-      alert('Failed to activate production: ' + (rErr?.message || 'Unknown error'));
-      return;
-    }
-
-    // Fetch departments to link department_id
-    const { data: depts } = await supabase.from('departments').select('id, name');
-    const deptMap = new Map((depts || []).map((d: any) => [d.name, d.id]));
-
-    // Insert stages
-    const stageRows = stages.map((s, idx) => ({
-      production_run_id: newRun.id,
-      stage_name: s.name,
-      stage_order: s.order,
-      department_id: deptMap.get(s.departmentName) || null,
-      input_weight_kg: 0,
-      output_weight_kg: 0,
-      loss_kg: 0,
-      loss_pct: 0,
-      loss_value: 0,
-      status: idx === 0 ? 'in_progress' : 'pending',
-      started_at: idx === 0 ? new Date().toISOString() : null,
-    }));
-
-    await supabase.from('production_stage_logs').insert(stageRows);
-
-    // Update style status
-    await supabase
-      .from('styles')
-      .update({
-        status: runType === 'bulk' ? 'bulk_production' : 'sample_production',
-      })
-      .eq('id', style.id);
-
-    await supabase.from('audit_log').insert({
-      user_id: currentUser.id,
-      action: 'ACTIVATE_PIPELINE',
-      table_name: 'production_runs',
-      record_id: newRun.id,
-      notes: `Activated ${runType} production pipeline for ${style.style_number} (${stages.length} stages)`,
-    });
-
-    setActionFeedback(`Production run activated for ${style.style_number} with ${stages.length} ordered stages.`);
-    setActiveTab('pipeline');
-    await fetchStyleData();
   };
 
-  const handleAddFabric = async (e: React.FormEvent) => {
+  const handleAddFabric = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!style) return;
-
-    await supabase.from('style_fabrics').insert({
+    store.addStyleFabric({
       style_id: style.id,
       s_no: fabrics.length + 1,
       fabric_code: fabCode,
@@ -585,16 +351,12 @@ export default function StyleDetailPage() {
       stenter_cost: Number(fabStenter),
       owc_cost: Number(fabOwc),
     });
-
     setIsAddFabricOpen(false);
-    await fetchStyleData();
   };
 
-  const handleAddLabDip = async (e: React.FormEvent) => {
+  const handleAddLabDip = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!style) return;
-
-    await supabase.from('lab_dips').insert({
+    store.addLabDip({
       style_id: style.id,
       pantone_ref: ldPantone,
       fabric: ldFabric,
@@ -603,31 +365,7 @@ export default function StyleDetailPage() {
       processing_route: ldRoute,
       approval_status: 'pending',
     });
-
     setIsAddLabDipOpen(false);
-    await fetchStyleData();
-  };
-
-  const handleDeleteStyleFabric = async (fabricId: string) => {
-    await supabase.from('style_fabrics').delete().eq('id', fabricId);
-    await fetchStyleData();
-  };
-
-  const handleUpdateLabDipStatus = async (
-    labDipId: string,
-    status: 'approved' | 'rejected',
-    option?: string
-  ) => {
-    await supabase
-      .from('lab_dips')
-      .update({
-        approval_status: status,
-        approved_option: option || null,
-        approved_on: status === 'approved' ? new Date().toISOString().split('T')[0] : null,
-      })
-      .eq('id', labDipId);
-
-    await fetchStyleData();
   };
 
   return (
@@ -1118,7 +856,7 @@ export default function StyleDetailPage() {
                                 <Edit3 className="w-3.5 h-3.5" />
                               </button>
                               <button
-                                onClick={() => handleDeleteStyleFabric(f.id)}
+                                onClick={() => store.deleteStyleFabric(f.id)}
                                 className="p-1 rounded bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 transition"
                                 title="Delete row"
                               >
@@ -1299,7 +1037,7 @@ export default function StyleDetailPage() {
                         <td className="text-right space-x-2">
                           {ld.approval_status !== 'approved' && (
                             <button
-                              onClick={() => handleUpdateLabDipStatus(ld.id, 'approved', 'Option A')}
+                              onClick={() => store.updateLabDipStatus(ld.id, 'approved', 'Option A', currentUser.id)}
                               className="px-2 py-0.5 rounded bg-emerald-900/80 hover:bg-emerald-800 text-emerald-300 text-[11px] font-medium"
                             >
                               Approve Option A
@@ -1307,7 +1045,7 @@ export default function StyleDetailPage() {
                           )}
                           {ld.approval_status !== 'rejected' && (
                             <button
-                              onClick={() => handleUpdateLabDipStatus(ld.id, 'rejected')}
+                              onClick={() => store.updateLabDipStatus(ld.id, 'rejected', undefined, currentUser.id)}
                               className="px-2 py-0.5 rounded bg-rose-950 hover:bg-rose-900 text-rose-300 text-[11px] font-medium"
                             >
                               Reject
@@ -1502,7 +1240,7 @@ export default function StyleDetailPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {runStageLogs
+                      {store['state'].stageLogs
                         .filter((l) => l.production_run_id === currentRun.id)
                         .sort((a, b) => a.stage_order - b.stage_order)
                         .map((l) => (
@@ -1581,34 +1319,36 @@ export default function StyleDetailPage() {
               <button
                 onClick={() => {
                   try {
+                    const wb = XLSX.utils.book_new();
+
                     // Sheet 1: Style Wise Fabric Working
                     const fabricRows = fabrics.map((f) => ({
-                      s_no: f.s_no,
-                      season: style.season,
-                      offer_no: style.offer_no,
-                      style_no: style.style_number,
-                      description: style.description,
-                      fabric_code: f.fabric_code,
-                      fabric_type: f.fabric_type,
-                      colour: f.colour,
-                      aop_ref: f.aop_ref,
-                      quality: f.quality,
-                      composition: f.composition,
-                      gsm: f.gsm,
-                      pc_wt: f.pc_wt,
-                      sample_qty: f.sample_qty,
-                      reqd_qty: f.reqd_qty,
-                      yarn_count: f.yarn_count,
-                      yarn_price: f.yarn_price,
-                      consume_pct: `${(f.consume_pct * 100).toFixed(0)}%`,
-                      effective_yarn_cost: f.effective_yarn_cost,
-                      knitting_cost: f.knitting_cost,
-                      heat_setting_cost: f.heat_setting_cost,
-                      solid_dye_cost: f.solid_dye_cost,
-                      dyed_dye_cost: f.dyed_dye_cost,
-                      stenter_cost: f.stenter_cost,
-                      owc_cost: f.owc_cost,
-                      total_cost: Number(
+                      'S.No': f.s_no,
+                      'Season': style.season,
+                      'Offer No': style.offer_no,
+                      'Style No': style.style_number,
+                      'Description': style.description,
+                      'Fabric Code': f.fabric_code,
+                      'Fabric Type': f.fabric_type,
+                      'Colour': f.colour,
+                      'AOP Ref': f.aop_ref,
+                      'Quality': f.quality,
+                      'Composition': f.composition,
+                      'GSM': f.gsm,
+                      'Pc Wt (kg)': f.pc_wt,
+                      'Sample Qty': f.sample_qty,
+                      'Reqd Qty (kg)': f.reqd_qty,
+                      'Yarn Count': f.yarn_count,
+                      'Yarn Price (INR)': f.yarn_price,
+                      'Consume %': `${(f.consume_pct * 100).toFixed(0)}%`,
+                      'Effective Yarn Cost (INR)': f.effective_yarn_cost,
+                      'Knitting (INR)': f.knitting_cost,
+                      'Heat Setting (INR)': f.heat_setting_cost,
+                      'Solid Dye (INR)': f.solid_dye_cost,
+                      'Dyed Dye (INR)': f.dyed_dye_cost,
+                      'Stenter (INR)': f.stenter_cost,
+                      'OWC (INR)': f.owc_cost,
+                      'Total Cost/Kg (INR)': Number(
                         (
                           (f.effective_yarn_cost || 0) +
                           (f.knitting_cost || 0) +
@@ -1620,133 +1360,60 @@ export default function StyleDetailPage() {
                         ).toFixed(2)
                       ),
                     }));
+                    const wsFabrics = XLSX.utils.json_to_sheet(fabricRows);
+                    XLSX.utils.book_append_sheet(wb, wsFabrics, 'Style Wise Fabric Working');
 
                     // Sheet 2: Bulk Costing Projections
                     const projRows = projection.fabrics.map((p) => ({
-                      fabric_code: p.fabricCode,
-                      fabric_type: p.fabricType,
-                      colour: p.colour,
-                      pc_wt: p.pcWt,
-                      bulk_qty: bulkQty,
-                      bulk_fabric_kg: p.bulkFabricKg,
-                      yarn_count: p.yarnCount,
-                      effective_yarn_cost: p.effectiveYarnCost,
-                      yarn_total_cost: p.yarnTotalCost,
-                      processing_cost: p.processingCostPerKg,
-                      processing_total_cost: p.processingTotalCost,
-                      fabric_total_cost: p.fabricTotalCost,
-                      cost_per_piece: p.fabricCostPerPiece,
+                      'Fabric Code': p.fabricCode,
+                      'Type': p.fabricType,
+                      'Colour': p.colour,
+                      'Pc Wt (kg)': p.pcWt,
+                      'Bulk Qty (pcs)': bulkQty,
+                      'Bulk Fabric Req (kg)': p.bulkFabricKg,
+                      'Yarn Count': p.yarnCount,
+                      'Effective Yarn Cost': p.effectiveYarnCost,
+                      'Total Yarn Cost (INR)': p.yarnTotalCost,
+                      'Processing Cost / kg': p.processingCostPerKg,
+                      'Total Processing Cost (INR)': p.processingTotalCost,
+                      'Total Fabric Cost (INR)': p.fabricTotalCost,
+                      'Cost Per Piece (INR)': p.fabricCostPerPiece,
                     }));
+                    const wsProj = XLSX.utils.json_to_sheet(projRows);
+                    XLSX.utils.book_append_sheet(wb, wsProj, 'Bulk Projections & Costing');
 
                     // Sheet 3: Lab Dips Record
                     const labRows = labDips.map((ld) => ({
-                      style_no: style.style_number,
-                      pantone_ref: ld.pantone_ref,
-                      fabric: ld.fabric,
-                      composition: ld.composition,
-                      gsm: ld.gsm,
-                      processing_route: ld.processing_route,
-                      lab_ref_no: ld.lab_ref_no,
-                      sent_on: ld.sent_on,
-                      approved_option: ld.approved_option || 'Option A',
-                      approved_on: ld.approved_on || '2024-04-10',
-                      status: ld.approval_status.toUpperCase(),
+                      'Style No': style.style_number,
+                      'Pantone Ref': ld.pantone_ref,
+                      'Fabric': ld.fabric,
+                      'Composition': ld.composition,
+                      'GSM': ld.gsm,
+                      'Processing Route': ld.processing_route,
+                      'Lab Ref No': ld.lab_ref_no,
+                      'Date Sent': ld.sent_on,
+                      'Approved Option': ld.approved_option || 'Option A',
+                      'Approved Date': ld.approved_on || '2024-04-10',
+                      'Status': ld.approval_status.toUpperCase(),
                     }));
+                    const wsLabs = XLSX.utils.json_to_sheet(labRows);
+                    XLSX.utils.book_append_sheet(wb, wsLabs, 'Lab Dips Record');
 
                     // Sheet 4: Executive Price Approval
                     const approvalRows = [
-                      { parameter: 'Style Number', value: style.style_number },
-                      { parameter: 'Offer Number', value: style.offer_no },
-                      { parameter: 'Bulk Target Qty', value: `${bulkQty} pcs` },
-                      { parameter: 'Calculated Cost / Piece', value: `INR ${projection.costPerPiece}` },
-                      { parameter: 'Quoted Price', value: `INR ${costing?.quoted_price || 0}` },
-                      { parameter: 'Approved Price', value: `INR ${costing?.approved_price || 0}` },
-                      { parameter: 'Approved At', value: costing?.approved_at || 'Pending' },
-                      { parameter: 'Approval Notes', value: costing?.approval_notes || '' },
+                      { Parameter: 'Style Number', Value: style.style_number },
+                      { Parameter: 'Offer Number', Value: style.offer_no },
+                      { Parameter: 'Bulk Target Qty', Value: `${bulkQty} pcs` },
+                      { Parameter: 'Calculated Cost / Piece', Value: `INR ${projection.costPerPiece}` },
+                      { Parameter: 'Quoted Price', Value: `INR ${costing?.quoted_price || 0}` },
+                      { Parameter: 'Approved Price', Value: `INR ${costing?.approved_price || 0}` },
+                      { Parameter: 'Approved At', Value: costing?.approved_at || 'Pending' },
+                      { Parameter: 'Approval Notes', Value: costing?.approval_notes || '' },
                     ];
+                    const wsApproval = XLSX.utils.json_to_sheet(approvalRows);
+                    XLSX.utils.book_append_sheet(wb, wsApproval, 'Price Approval Audit');
 
-                    exportToExcel(
-                      [
-                        {
-                          name: 'Style Wise Fabric Working',
-                          columns: [
-                            { header: 'S.No', key: 's_no', width: 8 },
-                            { header: 'Season', key: 'season', width: 10 },
-                            { header: 'Offer No', key: 'offer_no', width: 12 },
-                            { header: 'Style No', key: 'style_no', width: 16 },
-                            { header: 'Description', key: 'description', width: 22 },
-                            { header: 'Fabric Code', key: 'fabric_code', width: 16 },
-                            { header: 'Fabric Type', key: 'fabric_type', width: 12 },
-                            { header: 'Colour', key: 'colour', width: 20 },
-                            { header: 'AOP Ref', key: 'aop_ref', width: 12 },
-                            { header: 'Quality', key: 'quality', width: 22 },
-                            { header: 'Composition', key: 'composition', width: 18 },
-                            { header: 'GSM', key: 'gsm', width: 10 },
-                            { header: 'Pc Wt (kg)', key: 'pc_wt', width: 12 },
-                            { header: 'Sample Qty', key: 'sample_qty', width: 12 },
-                            { header: 'Reqd Qty (kg)', key: 'reqd_qty', width: 14 },
-                            { header: 'Yarn Count', key: 'yarn_count', width: 12 },
-                            { header: 'Yarn Price (INR)', key: 'yarn_price', width: 14 },
-                            { header: 'Consume %', key: 'consume_pct', width: 12 },
-                            { header: 'Effective Yarn Cost', key: 'effective_yarn_cost', width: 18 },
-                            { header: 'Knitting', key: 'knitting_cost', width: 12 },
-                            { header: 'Heat Setting', key: 'heat_setting_cost', width: 12 },
-                            { header: 'Solid Dye', key: 'solid_dye_cost', width: 12 },
-                            { header: 'Dyed Dye', key: 'dyed_dye_cost', width: 12 },
-                            { header: 'Stenter', key: 'stenter_cost', width: 12 },
-                            { header: 'OWC', key: 'owc_cost', width: 12 },
-                            { header: 'Total Cost/Kg (INR)', key: 'total_cost', width: 18 },
-                          ],
-                          rows: fabricRows,
-                        },
-                        {
-                          name: 'Bulk Projections & Costing',
-                          columns: [
-                            { header: 'Fabric Code', key: 'fabric_code', width: 16 },
-                            { header: 'Type', key: 'fabric_type', width: 12 },
-                            { header: 'Colour', key: 'colour', width: 20 },
-                            { header: 'Pc Wt (kg)', key: 'pc_wt', width: 12 },
-                            { header: 'Bulk Qty (pcs)', key: 'bulk_qty', width: 14 },
-                            { header: 'Bulk Fabric Req (kg)', key: 'bulk_fabric_kg', width: 18 },
-                            { header: 'Yarn Count', key: 'yarn_count', width: 12 },
-                            { header: 'Effective Yarn Cost', key: 'effective_yarn_cost', width: 18 },
-                            { header: 'Total Yarn Cost (INR)', key: 'yarn_total_cost', width: 20 },
-                            { header: 'Processing Cost / kg', key: 'processing_cost', width: 18 },
-                            { header: 'Total Processing Cost', key: 'processing_total_cost', width: 20 },
-                            { header: 'Total Fabric Cost', key: 'fabric_total_cost', width: 18 },
-                            { header: 'Cost Per Piece (INR)', key: 'cost_per_piece', width: 18 },
-                          ],
-                          rows: projRows,
-                        },
-                        {
-                          name: 'Lab Dips Record',
-                          columns: [
-                            { header: 'Style No', key: 'style_no', width: 16 },
-                            { header: 'Pantone Ref', key: 'pantone_ref', width: 20 },
-                            { header: 'Fabric', key: 'fabric', width: 18 },
-                            { header: 'Composition', key: 'composition', width: 18 },
-                            { header: 'GSM', key: 'gsm', width: 10 },
-                            { header: 'Processing Route', key: 'processing_route', width: 22 },
-                            { header: 'Lab Ref No', key: 'lab_ref_no', width: 16 },
-                            { header: 'Date Sent', key: 'sent_on', width: 14 },
-                            { header: 'Approved Option', key: 'approved_option', width: 16 },
-                            { header: 'Approved Date', key: 'approved_on', width: 14 },
-                            { header: 'Status', key: 'status', width: 12 },
-                          ],
-                          rows: labRows,
-                        },
-                        {
-                          name: 'Price Approval Audit',
-                          columns: [
-                            { header: 'Parameter', key: 'parameter', width: 25 },
-                            { header: 'Value', key: 'value', width: 25 },
-                          ],
-                          rows: approvalRows,
-                        },
-                      ],
-                      `NK-W28-Offer-${style.offer_no}-${style.style_number}-Master.xlsx`
-                    );
-
+                    XLSX.writeFile(wb, `NK-W28-Offer-${style.offer_no}-${style.style_number}-Master.xlsx`);
                     setActionFeedback('Complete multi-sheet master workbook exported successfully to Excel (.xlsx)!');
                     setTimeout(() => setActionFeedback(null), 4000);
                   } catch (err) {

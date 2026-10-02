@@ -1,12 +1,12 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
-import { Task, Department, ProductionStageLog } from '@/lib/types/erp';
+import { ErpStore } from '@/lib/db/erpStore';
+import { Task, Profile, Department, ProductionStageLog } from '@/lib/types/erp';
 import { Badge } from '@/components/ui/Badge';
 import { verifyFloorWeights } from '@/lib/domain/loss';
-import { exportToExcel } from '@/lib/excel/excelExport';
+import * as XLSX from 'xlsx';
 import {
   CheckSquare,
   Plus,
@@ -23,29 +23,14 @@ import {
   Download,
 } from 'lucide-react';
 
-interface SimpleProfile {
-  id: string;
-  full_name: string;
-  email: string;
-  role: string;
-  department_id?: string | null;
-  department_name?: string;
-}
-
 export default function TasksPage() {
   const router = useRouter();
-  const supabase = createClient();
-
+  const store = ErpStore.getInstance();
   const [isMounted, setIsMounted] = useState(false);
-  const [currentUser, setCurrentUser] = useState<SimpleProfile>({
-    id: '',
-    full_name: '',
-    email: '',
-    role: 'manager',
-  });
+  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
   const [tasks, setTasks] = useState<Task[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
-  const [users, setUsers] = useState<SimpleProfile[]>([]);
+  const [users, setUsers] = useState<Profile[]>([]);
   const [stageLogs, setStageLogs] = useState<ProductionStageLog[]>([]);
 
   // Filter state
@@ -82,147 +67,6 @@ export default function TasksPage() {
 
   const [feedback, setFeedback] = useState<string | null>(null);
 
-  const fetchData = useCallback(async () => {
-    // 1. Fetch tasks with relations
-    const { data: tData, error: tErr } = await supabase
-      .from('tasks')
-      .select(`
-        *,
-        departments (
-          id,
-          name
-        ),
-        profiles!tasks_assigned_to_fkey (
-          id,
-          full_name,
-          email,
-          role
-        ),
-        production_stage_logs (
-          id,
-          stage_name,
-          stage_order,
-          input_weight_kg,
-          output_weight_kg,
-          scrap_waste_kg,
-          piece_count,
-          machine_scale_id,
-          stage_notes,
-          production_runs (
-            id,
-            style_number
-          )
-        )
-      `)
-      .order('created_at', { ascending: false });
-
-    if (tErr) console.error('Error fetching tasks:', tErr);
-    if (tData) {
-      const mapped: Task[] = tData.map((t: any) => {
-        const stage = t.production_stage_logs;
-        return {
-          id: t.id,
-          department_id: t.department_id,
-          department_name: t.departments?.name,
-          assigned_to: t.assigned_to,
-          assigned_to_name: t.profiles?.full_name || 'Unassigned',
-          created_by: t.created_by,
-          specification: t.specification,
-          status: t.status,
-          expected_completion_date: t.expected_completion_date || '',
-          actual_completion_date: t.actual_completion_date,
-          actual_days_taken: t.actual_days_taken,
-          notes: t.notes,
-          production_stage_log_id: t.production_stage_log_id,
-          created_at: t.created_at,
-          stage_name: stage?.stage_name || 'Production Stage',
-          style_number: stage?.production_runs?.style_number,
-          manager_assigned_weight_kg: Number(stage?.input_weight_kg || 90),
-          employee_measured_output_weight_kg: Number(stage?.output_weight_kg || 0),
-          employee_waste_scrap_weight_kg: Number(stage?.scrap_waste_kg || 0),
-          employee_piece_count: Number(stage?.piece_count || 0),
-          machine_scale_id: stage?.machine_scale_id || '',
-          employee_notes: stage?.stage_notes || '',
-        };
-      });
-      setTasks(mapped);
-    }
-
-    // 2. Fetch departments
-    const { data: dData } = await supabase.from('departments').select('*').order('name');
-    if (dData) setDepartments(dData as Department[]);
-
-    // 3. Fetch users
-    const { data: uData } = await supabase
-      .from('profiles')
-      .select('id, full_name, email, role, department_id, departments(name)')
-      .order('full_name');
-    if (uData) {
-      setUsers(
-        uData.map((u: any) => ({
-          id: u.id,
-          full_name: u.full_name,
-          email: u.email,
-          role: u.role,
-          department_id: u.department_id,
-          department_name: u.departments?.name,
-        }))
-      );
-    }
-
-    // 4. Fetch stage logs
-    const { data: stData } = await supabase
-      .from('production_stage_logs')
-      .select('*, production_runs(style_number)')
-      .order('stage_order');
-    if (stData) setStageLogs(stData as ProductionStageLog[]);
-  }, [supabase]);
-
-  useEffect(() => {
-    setIsMounted(true);
-    const init = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) {
-        router.replace('/login');
-        return;
-      }
-
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('id, role, full_name, email, department_id, departments(name)')
-        .eq('id', user.id)
-        .single();
-
-      if (!profile) {
-        router.replace('/login');
-        return;
-      }
-
-      if (profile.role === 'employee') {
-        router.replace('/employee/tasks');
-        return;
-      }
-
-      setCurrentUser({
-        id: profile.id,
-        role: profile.role,
-        full_name: profile.full_name || 'Staff',
-        email: profile.email || '',
-        department_id: profile.department_id,
-        department_name: (profile.departments as any)?.name,
-      });
-
-      await fetchData();
-    };
-
-    init();
-  }, [supabase, router, fetchData]);
-
-  const isManagement = isMounted ? currentUser.role === 'owner' || currentUser.role === 'manager' : false;
-
   const handleOpenEditTask = (task: Task) => {
     setSelectedTaskForEdit(task);
     setEditSpec(task.specification || '');
@@ -234,49 +78,53 @@ export default function TasksPage() {
     setEditNotes(task.notes || '');
   };
 
-  const handleSaveEditTask = async (e: React.FormEvent) => {
+  const handleSaveEditTask = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTaskForEdit) return;
 
-    const { error: tErr } = await supabase
-      .from('tasks')
-      .update({
+    const res = store.updateTaskDetails(
+      selectedTaskForEdit.id,
+      {
         specification: editSpec,
         department_id: editDeptId,
         assigned_to: editEmployeeId,
+        manager_assigned_weight_kg: editTargetWeight,
         expected_completion_date: editExpectedDate,
         status: editStatus,
         notes: editNotes,
-      })
-      .eq('id', selectedTaskForEdit.id);
+      },
+      currentUser.id
+    );
 
-    if (tErr) {
-      alert('Failed to update task: ' + tErr.message);
-      return;
+    if (res.success) {
+      setFeedback('Task details updated successfully.');
+      setSelectedTaskForEdit(null);
+      setTimeout(() => setFeedback(null), 4000);
     }
-
-    if (selectedTaskForEdit.production_stage_log_id && editTargetWeight > 0) {
-      await supabase
-        .from('production_stage_logs')
-        .update({
-          input_weight_kg: editTargetWeight,
-        })
-        .eq('id', selectedTaskForEdit.production_stage_log_id);
-    }
-
-    await supabase.from('audit_log').insert({
-      user_id: currentUser.id,
-      action: 'UPDATE',
-      table_name: 'tasks',
-      record_id: selectedTaskForEdit.id,
-      notes: `Updated task details for #${selectedTaskForEdit.id.slice(-6)}`,
-    });
-
-    setFeedback('Task details updated successfully.');
-    setSelectedTaskForEdit(null);
-    setTimeout(() => setFeedback(null), 3000);
-    await fetchData();
   };
+
+  useEffect(() => {
+    setIsMounted(true);
+    const refresh = () => {
+      const u = store.getCurrentUser();
+      setCurrentUser(u);
+      // Redirect employees to their isolated portal
+      if (u.role === 'employee') {
+        router.replace('/employee/tasks');
+        return;
+      }
+      setTasks(store.getTasks(u));
+      setDepartments(store.getDepartments());
+      setUsers(store.getUsers());
+      setStageLogs(store['state'].stageLogs);
+    };
+
+    refresh();
+    const unsub = store.subscribe(refresh);
+    return unsub;
+  }, [store, router]);
+
+  const isManagement = isMounted ? currentUser.role === 'owner' || currentUser.role === 'manager' : false;
 
   const handleOpenFloorMeasurement = (task: Task) => {
     setSelectedTaskForEntry(task);
@@ -287,7 +135,7 @@ export default function TasksPage() {
     setEmployeeNotes(task.employee_notes || '');
   };
 
-  const handleSubmitFloorMeasurement = async (e: React.FormEvent) => {
+  const handleSubmitFloorMeasurement = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTaskForEntry) return;
 
@@ -296,151 +144,76 @@ export default function TasksPage() {
       return;
     }
 
-    if (selectedTaskForEntry.production_stage_log_id) {
-      await supabase
-        .from('production_stage_logs')
-        .update({
-          output_weight_kg: Number(measuredOutputWeight),
-          scrap_waste_kg: Number(measuredScrapWeight),
-          piece_count: Number(pieceCount),
-          machine_scale_id: scaleId,
-          stage_notes: employeeNotes,
-          status: 'done',
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', selectedTaskForEntry.production_stage_log_id);
-    }
-
-    const today = new Date().toISOString().split('T')[0];
-    const { error: tErr } = await supabase
-      .from('tasks')
-      .update({
-        status: 'completed',
-        actual_completion_date: today,
-        actual_days_taken: 1,
-      })
-      .eq('id', selectedTaskForEntry.id);
-
-    if (tErr) {
-      alert('Failed to submit floor measurement: ' + tErr.message);
-      return;
-    }
-
-    await supabase.from('audit_log').insert({
-      user_id: currentUser.id,
-      action: 'UPDATE',
-      table_name: 'tasks',
-      record_id: selectedTaskForEntry.id,
-      notes: `Floor measurement logged: ${measuredOutputWeight} kg on ${scaleId}`,
+    const res = store.submitEmployeeFloorMeasurement(selectedTaskForEntry.id, {
+      measuredOutputWeightKg: measuredOutputWeight,
+      wasteScrapWeightKg: measuredScrapWeight,
+      pieceCount,
+      scaleId,
+      employeeNotes,
+      userId: currentUser.id,
     });
 
-    setFeedback('Floor measurement submitted successfully.');
-    setSelectedTaskForEntry(null);
-    setTimeout(() => setFeedback(null), 4000);
-    await fetchData();
+    if (res.success) {
+      setFeedback(res.message);
+      setSelectedTaskForEntry(null);
+      setTimeout(() => setFeedback(null), 4000);
+    }
   };
 
-  const handleCreateTask = async (e: React.FormEvent) => {
+  const handleCreateTask = (e: React.FormEvent) => {
     e.preventDefault();
     if (!specification || !expectedDate || !selectedDeptId || !selectedEmployeeId) {
       alert('Please complete all required task fields.');
       return;
     }
 
-    const stageId = selectedStageLogId || stageLogs[0]?.id || null;
-
-    const { error: insErr } = await supabase.from('tasks').insert({
-      production_stage_log_id: stageId,
-      department_id: selectedDeptId,
-      assigned_to: selectedEmployeeId,
-      created_by: currentUser.id,
-      specification: specification.trim(),
-      expected_completion_date: expectedDate,
-      status: 'pending',
-      notes: taskNotes,
-    });
-
-    if (insErr) {
-      alert('Failed to create task: ' + insErr.message);
-      return;
-    }
-
-    if (stageId && assignedTargetWeight > 0) {
-      await supabase
-        .from('production_stage_logs')
-        .update({
-          input_weight_kg: assignedTargetWeight,
-        })
-        .eq('id', stageId);
-    }
-
-    await supabase.from('audit_log').insert({
-      user_id: currentUser.id,
-      action: 'CREATE',
-      table_name: 'tasks',
-      notes: `Assigned new task to ${users.find((u) => u.id === selectedEmployeeId)?.full_name || 'staff'}`,
-    });
+    store.createTask(
+      {
+        production_stage_log_id: selectedStageLogId || store['state'].stageLogs[0]?.id || '',
+        department_id: selectedDeptId,
+        assigned_to: selectedEmployeeId,
+        specification: specification.trim(),
+        expected_completion_date: expectedDate,
+        manager_assigned_weight_kg: assignedTargetWeight,
+        notes: taskNotes,
+      },
+      currentUser.id
+    );
 
     setIsNewTaskOpen(false);
     setSpecification('');
     setExpectedDate('');
-    setTaskNotes('');
     setFeedback('Task assigned successfully with target weight.');
     setTimeout(() => setFeedback(null), 3000);
-    await fetchData();
   };
 
   const handleExportTasksExcel = () => {
     try {
+      const wb = XLSX.utils.book_new();
       const rows = tasks.map((t) => {
-        const discrepancy =
-          t.manager_assigned_weight_kg && t.employee_measured_output_weight_kg
-            ? Math.abs(t.manager_assigned_weight_kg - t.employee_measured_output_weight_kg).toFixed(2)
-            : '0.00';
+        const discrepancy = t.manager_assigned_weight_kg && t.employee_measured_output_weight_kg
+          ? Math.abs(t.manager_assigned_weight_kg - t.employee_measured_output_weight_kg).toFixed(2)
+          : '0.00';
         return {
-          task_id: t.id,
-          stage_name: t.stage_name || 'Production Stage',
-          department: t.department_name || '',
-          assigned_employee: t.assigned_to_name || '',
-          specification: t.specification,
-          status: t.status.toUpperCase(),
-          manager_assigned_weight: t.manager_assigned_weight_kg || 0,
-          employee_measured_output: t.employee_measured_output_weight_kg || 'Pending',
-          employee_scrap_weight: t.employee_waste_scrap_weight_kg || 0,
-          piece_count: t.employee_piece_count || 0,
-          scale_id: t.machine_scale_id || 'N/A',
-          discrepancy,
-          expected_date: t.expected_completion_date,
-          notes: t.notes || '',
+          'Task ID': t.id,
+          'Stage Name': t.stage_name || 'Production Stage',
+          'Department': t.department_name || '',
+          'Assigned Employee': t.assigned_to_name || '',
+          'Specification': t.specification,
+          'Status': t.status.toUpperCase(),
+          'Supervisor Target Weight (kg)': t.manager_assigned_weight_kg || 0,
+          'Employee Measured Output (kg)': t.employee_measured_output_weight_kg || 'Pending',
+          'Employee Scrap Weight (kg)': t.employee_waste_scrap_weight_kg || 0,
+          'Piece Count': t.employee_piece_count || 0,
+          'Machine Scale ID': t.machine_scale_id || 'N/A',
+          'Discrepancy (kg)': discrepancy,
+          'Expected Completion Date': t.expected_completion_date,
+          'Notes': t.notes || '',
         };
       });
-
-      exportToExcel(
-        [
-          {
-            name: 'Floor Tasks Log',
-            columns: [
-              { header: 'Task ID', key: 'task_id', width: 14 },
-              { header: 'Stage Name', key: 'stage_name', width: 18 },
-              { header: 'Department', key: 'department', width: 16 },
-              { header: 'Assigned Employee', key: 'assigned_employee', width: 20 },
-              { header: 'Specification', key: 'specification', width: 30 },
-              { header: 'Status', key: 'status', width: 12 },
-              { header: 'Target Weight (kg)', key: 'manager_assigned_weight', width: 18 },
-              { header: 'Measured Output (kg)', key: 'employee_measured_output', width: 20 },
-              { header: 'Scrap Weight (kg)', key: 'employee_scrap_weight', width: 18 },
-              { header: 'Piece Count', key: 'piece_count', width: 14 },
-              { header: 'Scale ID', key: 'scale_id', width: 16 },
-              { header: 'Discrepancy (kg)', key: 'discrepancy', width: 16 },
-              { header: 'Expected Date', key: 'expected_date', width: 16 },
-              { header: 'Notes', key: 'notes', width: 25 },
-            ],
-            rows,
-          },
-        ],
-        'Floor-Tasks-Weighing-Log.xlsx'
-      );
-
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, 'Floor Tasks Log');
+      XLSX.writeFile(wb, `Floor-Tasks-Weighing-Log.xlsx`);
       setFeedback('Floor tasks & floor measurements exported to Excel (.xlsx)!');
       setTimeout(() => setFeedback(null), 4000);
     } catch (err) {
@@ -449,43 +222,12 @@ export default function TasksPage() {
     }
   };
 
-  const handleUpdateStatus = async (taskId: string, newStatus: 'pending' | 'in_progress' | 'completed') => {
-    const today = new Date().toISOString().split('T')[0];
-    const { error } = await supabase
-      .from('tasks')
-      .update({
-        status: newStatus,
-        actual_completion_date: newStatus === 'completed' ? today : null,
-      })
-      .eq('id', taskId);
-
-    if (error) {
-      alert('Failed to update task status: ' + error.message);
-      return;
+  const handleUpdateStatus = (taskId: string, newStatus: 'pending' | 'in_progress' | 'completed') => {
+    const res = store.updateTaskStatus(taskId, newStatus, currentUser.id);
+    if (res.success && res.task) {
+      setFeedback(`Task status updated to "${newStatus.toUpperCase()}".`);
+      setTimeout(() => setFeedback(null), 3000);
     }
-
-    const task = tasks.find((t) => t.id === taskId);
-    if (newStatus === 'completed' && task?.production_stage_log_id) {
-      await supabase
-        .from('production_stage_logs')
-        .update({
-          status: 'done',
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', task.production_stage_log_id);
-    }
-
-    await supabase.from('audit_log').insert({
-      user_id: currentUser.id,
-      action: 'UPDATE',
-      table_name: 'tasks',
-      record_id: taskId,
-      notes: `Updated status to ${newStatus}`,
-    });
-
-    setFeedback(`Task status updated to "${newStatus.toUpperCase()}".`);
-    setTimeout(() => setFeedback(null), 3000);
-    await fetchData();
   };
 
   const filteredTasks = tasks.filter((t) => {
@@ -583,33 +325,29 @@ export default function TasksPage() {
             <div className="kpi-value text-amber-300">
               {tasks.filter((t) => t.status === 'pending').length}
             </div>
-            <div className="text-[11px] text-slate-500 mt-1">Awaiting machine assignment</div>
+            <div className="text-[11px] text-slate-500 mt-1">Awaiting floor start</div>
           </div>
 
           <div className="kpi-card">
-            <div className="kpi-label">Tasks Completed</div>
+            <div className="kpi-label">Completed & Verified</div>
             <div className="kpi-value text-emerald-400">
               {tasks.filter((t) => t.status === 'completed').length}
             </div>
-            <div className="text-[11px] text-slate-500 mt-1">Ready for next process stage</div>
+            <div className="text-[11px] text-slate-500 mt-1">Actual days recorded</div>
           </div>
         </div>
       )}
 
-      {/* Filter Strip */}
-      <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-[#111726] border border-slate-800 rounded text-xs">
-        <div className="flex items-center gap-2">
-          <Filter className="w-3.5 h-3.5 text-slate-400" />
-          <span className="font-semibold text-slate-300">Filters:</span>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <span className="text-slate-400">Status:</span>
+      {/* Task Filters */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 glass-card p-3 text-xs">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Filter className="w-3.5 h-3.5 text-slate-400" />
+            <span className="text-slate-400 font-medium">Status:</span>
             <select
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value)}
-              className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white focus:outline-none"
+              className="bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-slate-200 text-xs focus:outline-none focus:border-primary cursor-pointer"
             >
               <option value="ALL">All Statuses</option>
               <option value="pending">Pending</option>
@@ -618,99 +356,101 @@ export default function TasksPage() {
             </select>
           </div>
 
-          <div className="flex items-center gap-1.5">
-            <span className="text-slate-400">Department:</span>
+          <div className="flex items-center gap-2">
+            <span className="text-slate-400 font-medium">Department:</span>
             <select
               value={filterDepartment}
               onChange={(e) => setFilterDepartment(e.target.value)}
-              className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-white focus:outline-none"
+              className="bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-slate-200 text-xs focus:outline-none focus:border-primary cursor-pointer"
             >
-              <option value="ALL">All Departments</option>
-              {departments.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
+              <option value="ALL">All Departments ({departments.length})</option>
+              {departments.map((dept) => (
+                <option key={dept.id} value={dept.id}>
+                  {dept.name}
                 </option>
               ))}
             </select>
           </div>
         </div>
+
+        <span className="text-[11px] text-slate-400 font-mono">
+          Showing <span className="text-slate-200 font-semibold">{filteredTasks.length}</span> task{filteredTasks.length === 1 ? '' : 's'}
+        </span>
       </div>
 
       {/* Tasks Table */}
-      <div className="bg-[#101625] border border-slate-800 rounded overflow-hidden">
+      <div className="glass-card overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="erp-table text-xs">
+          <table className="erp-table text-xs min-w-[1240px]">
             <thead>
               <tr>
-                <th>Task ID / Stage</th>
-                <th>Department</th>
-                <th>Assigned Staff</th>
-                <th>Specification</th>
-                <th>Target Weight</th>
-                <th>Floor Measured Weight</th>
-                <th>Cross-Verification Discrepancy</th>
-                <th>Expected Date</th>
-                <th>Status</th>
-                <th className="text-right">Action</th>
+                <th className="w-[140px] whitespace-nowrap">Style / Stage</th>
+                <th className="w-[110px] whitespace-nowrap">Department</th>
+                <th className="min-w-[280px] max-w-[360px]">Task Specification</th>
+                <th className="w-[140px] whitespace-nowrap">Assigned Staff</th>
+                <th className="w-[170px] whitespace-nowrap">Floor Weight Entry (kg)</th>
+                <th className="w-[180px] whitespace-nowrap">Cross-Verification Discrepancy</th>
+                <th className="w-[120px] whitespace-nowrap">Expected Date</th>
+                <th className="w-[120px] whitespace-nowrap">Status</th>
+                <th className="min-w-[200px] text-right whitespace-nowrap">Action</th>
               </tr>
             </thead>
             <tbody>
               {filteredTasks.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="text-center py-8 text-slate-500 text-xs">
-                    No tasks match the selected filter criteria.
+                  <td colSpan={9} className="text-center py-12 text-slate-500 text-xs">
+                    No tasks found in your departmental queue.
                   </td>
                 </tr>
               ) : (
                 filteredTasks.map((t) => {
-                  const targetWeight = t.manager_assigned_weight_kg || 0;
-                  const measuredWeight = t.employee_measured_output_weight_kg || 0;
-                  const cross =
-                    targetWeight > 0 && measuredWeight > 0
-                      ? verifyFloorWeights(measuredWeight, targetWeight)
-                      : null;
+                  const empWeight = t.employee_measured_output_weight_kg;
+                  const mgrWeight = t.manager_assigned_weight_kg || 90;
+                  const cross = empWeight ? verifyFloorWeights(empWeight, mgrWeight) : null;
 
                   return (
                     <tr key={t.id}>
-                      <td className="font-mono text-white">
-                        <div className="font-bold text-xs">{t.stage_name || 'Production Stage'}</div>
-                        <div className="text-[10px] text-slate-400 font-mono">#{t.id.slice(-6)}</div>
-                      </td>
-                      <td className="text-slate-300 font-medium">
-                        <div className="flex items-center gap-1.5">
-                          <Building2 className="w-3.5 h-3.5 text-slate-500" />
-                          {t.department_name}
+                      <td className="whitespace-nowrap">
+                        <div className="font-mono font-bold text-white tracking-wide">{t.style_number || 'Style Run'}</div>
+                        <div className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5 mt-0.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-primary/80 inline-block" />
+                          {t.stage_name}
                         </div>
                       </td>
-                      <td className="text-slate-200">
-                        <div className="flex items-center gap-1.5">
-                          <User className="w-3.5 h-3.5 text-slate-400" />
-                          <span className="font-medium">{t.assigned_to_name}</span>
+                      <td className="whitespace-nowrap">
+                        <Badge variant="neutral">{t.department_name}</Badge>
+                      </td>
+                      <td className="min-w-[280px] max-w-[360px] whitespace-normal">
+                        <div className="font-medium text-slate-200 text-xs leading-relaxed break-words">
+                          {t.specification}
                         </div>
-                      </td>
-                      <td className="text-slate-300 max-w-[220px]">
-                        <p className="line-clamp-2">{t.specification}</p>
-                      </td>
-                      <td className="mono-num text-slate-300">
-                        {t.manager_assigned_weight_kg ? (
-                          <span className="font-semibold text-slate-200">
-                            {t.manager_assigned_weight_kg} kg
-                          </span>
-                        ) : (
-                          <span className="text-slate-500 text-[11px]">—</span>
+                        {t.employee_notes && (
+                          <div className="text-[11px] text-sky-400 mt-1.5 p-1.5 rounded bg-sky-950/40 border border-sky-800/30 flex items-start gap-1.5 break-words">
+                            <span className="text-[10px] uppercase font-bold text-sky-400 shrink-0 tracking-wider">Note:</span>
+                            <span className="italic leading-tight text-sky-200/90">{t.employee_notes}</span>
+                          </div>
                         )}
                       </td>
-                      <td className="mono-num">
-                        {t.employee_measured_output_weight_kg ? (
-                          <div>
-                            <span className="font-bold text-sky-400">
-                              {t.employee_measured_output_weight_kg} kg
-                            </span>
-                            <div className="text-[10px] text-slate-400 font-normal">
-                              Scrap: {t.employee_waste_scrap_weight_kg || 0} kg • Pcs: {t.employee_piece_count || 0}
+                      <td className="whitespace-nowrap">
+                        <div className="text-slate-300 font-medium flex items-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 text-[10px] font-bold">
+                            {t.assigned_to_name ? t.assigned_to_name.charAt(0).toUpperCase() : '?'}
+                          </div>
+                          <span>{t.assigned_to_name}</span>
+                        </div>
+                      </td>
+                      {/* Floor Weight Entry Column */}
+                      <td className="whitespace-nowrap">
+                        {empWeight ? (
+                          <div className="mono-num text-[11px] space-y-0.5">
+                            <div className="font-bold text-sky-300 flex items-center gap-1.5">
+                              <span>{empWeight} kg</span>
+                              <span className="text-[10px] text-slate-400 font-normal">({t.employee_piece_count || 500} pcs)</span>
                             </div>
-                            <div className="text-[9px] text-slate-500 font-mono">
-                              {t.machine_scale_id}
+                            <div className="text-[10px] text-amber-400/90 flex items-center gap-1 font-sans">
+                              <span>Scrap: <span className="font-mono">{t.employee_waste_scrap_weight_kg || 0} kg</span></span>
+                              <span className="text-slate-600">&bull;</span>
+                              <span className="text-slate-400 truncate max-w-[90px]">{t.machine_scale_id || 'Scale'}</span>
                             </div>
                           </div>
                         ) : (
@@ -728,7 +468,7 @@ export default function TasksPage() {
                               variant={
                                 cross.status === 'matched'
                                   ? 'success'
-                                  : (cross.status as string) === 'minor_variance'
+                                  : cross.status === 'minor_variance'
                                   ? 'warning'
                                   : 'danger'
                               }
@@ -757,7 +497,7 @@ export default function TasksPage() {
                           <select
                             value={t.status}
                             onChange={(e) => handleUpdateStatus(t.id, e.target.value as any)}
-                            className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white font-medium focus:outline-none"
+                            className="bg-slate-900 border border-slate-700 text-xs rounded px-2.5 py-1 text-white font-medium focus:outline-none focus:border-primary cursor-pointer hover:border-slate-600 transition"
                           >
                             <option value="pending">Pending</option>
                             <option value="in_progress">In Progress</option>
@@ -772,26 +512,47 @@ export default function TasksPage() {
                                 ? 'info'
                                 : 'warning'
                             }
+                            dot
                           >
-                            {t.status.toUpperCase()}
+                            {t.status.replace(/_/g, ' ')}
                           </Badge>
                         )}
                       </td>
                       <td className="text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-1.5 justify-end">
+                        <div className="inline-flex items-center gap-1.5">
+                          {/* Employee Floor Measurement Entry Button */}
                           <button
                             onClick={() => handleOpenFloorMeasurement(t)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-sky-950 text-sky-300 border border-sky-800 hover:bg-sky-900 transition text-[11px] font-semibold"
+                            className="px-2.5 py-1 rounded-md bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 text-xs font-medium transition flex items-center gap-1.5"
+                            title="Enter or edit bundle weights, selvage waste, and piece count"
                           >
-                            <Scale className="w-3 h-3 text-sky-400" />
-                            {t.employee_measured_output_weight_kg ? 'Re-Weigh' : 'Log Weight'}
+                            <Scale className="w-3.5 h-3.5" />
+                            {empWeight ? 'Edit Weight' : 'Enter Weight'}
                           </button>
-                          {isManagement && (
+
+                          <button
+                            onClick={() => handleOpenEditTask(t)}
+                            className="px-2.5 py-1 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium transition"
+                            title="Edit task specifications, assigned staff, target weight, or status"
+                          >
+                            Edit Task
+                          </button>
+
+                          {/* Mark Complete: Management can always do it, employees can do it for their own tasks */}
+                          {t.status !== 'completed' && (isManagement || t.assigned_to === currentUser.id) && (
                             <button
-                              onClick={() => handleOpenEditTask(t)}
-                              className="px-2 py-1 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white transition text-[11px]"
+                              onClick={() => {
+                                if (!isManagement && !t.employee_measured_output_weight_kg) {
+                                  alert('Please enter your floor weight measurement before marking complete.');
+                                  return;
+                                }
+                                handleUpdateStatus(t.id, 'completed');
+                                setFeedback(`✓ Task marked complete. Pipeline stage auto-advancing to next department.`);
+                                setTimeout(() => setFeedback(null), 5000);
+                              }}
+                              className="px-2.5 py-1 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-medium transition"
                             >
-                              Edit
+                              {isManagement ? 'Mark Verified' : 'Mark Complete'}
                             </button>
                           )}
                         </div>
@@ -805,98 +566,141 @@ export default function TasksPage() {
         </div>
       </div>
 
-      {/* MODAL: FLOOR OPERATOR MEASUREMENT DRAWER */}
+      {/* MODAL / DRAWER: ENTER FLOOR MEASUREMENTS (For Employees & Managers) */}
       {selectedTaskForEntry && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
           <div className="bg-[#111726] border border-slate-700 rounded-lg max-w-lg w-full p-6 shadow-2xl space-y-4 text-xs">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div>
+                <span className="text-[10px] uppercase font-semibold text-slate-500">Floor Operator Work Slip</span>
                 <h2 className="text-sm font-bold text-white uppercase tracking-wider">
-                  Log Operator Floor Weight Measurement
+                  Record Garment Weights: {selectedTaskForEntry.style_number} ({selectedTaskForEntry.stage_name})
                 </h2>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Task #{selectedTaskForEntry.id.slice(-6)} • {selectedTaskForEntry.stage_name}
-                </p>
               </div>
               <button
                 onClick={() => setSelectedTaskForEntry(null)}
-                className="text-slate-400 hover:text-white"
+                className="text-slate-400 hover:text-white font-mono"
               >
                 ✕
               </button>
             </div>
 
             <form onSubmit={handleSubmitFloorMeasurement} className="space-y-4">
-              <div className="p-3 bg-slate-900 rounded border border-slate-800 space-y-1">
-                <div className="text-slate-400">Supervisor Target Weight:</div>
-                <div className="text-base font-bold text-emerald-400 font-mono">
-                  {selectedTaskForEntry.manager_assigned_weight_kg
-                    ? `${selectedTaskForEntry.manager_assigned_weight_kg} kg`
-                    : 'Not Specified'}
-                </div>
+              <div className="p-3 bg-slate-900/90 border border-slate-800 rounded space-y-1">
+                <span className="text-slate-400 text-[10px] uppercase font-semibold">Assigned Task Specification:</span>
+                <div className="text-slate-200 font-medium">{selectedTaskForEntry.specification}</div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-medium mb-1">
-                    Floor Measured Output (kg) *
+                  <label className="block text-slate-300 font-bold mb-1">
+                    Floor Measured Output Weight (kg) *
                   </label>
                   <input
                     type="number"
                     step="0.01"
                     required
-                    value={measuredOutputWeight}
+                    placeholder="e.g. 80.00"
+                    value={measuredOutputWeight || ''}
                     onChange={(e) => setMeasuredOutputWeight(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white font-mono text-sm"
+                    className="w-full bg-slate-950 border border-sky-600/80 rounded p-2 text-white font-mono text-sm focus:outline-none focus:ring-1 focus:ring-sky-500"
                   />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">Actual bundle weight on floor</span>
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 font-medium mb-1">
-                    Scrap / Selvage Waste (kg)
+                  <label className="block text-slate-300 font-bold mb-1">
+                    Selvage / Scrap Waste Weight (kg)
                   </label>
                   <input
                     type="number"
                     step="0.01"
-                    value={measuredScrapWeight}
+                    placeholder="e.g. 10.00"
+                    value={measuredScrapWeight || ''}
                     onChange={(e) => setMeasuredScrapWeight(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white font-mono text-sm"
+                    className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white font-mono text-sm focus:outline-none"
                   />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">Trimming & edge scrap byproduct</span>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-medium mb-1">Piece Count</label>
+                  <label className="block text-slate-400 font-medium mb-1">Total Garment Pieces Processed</label>
                   <input
                     type="number"
                     value={pieceCount}
                     onChange={(e) => setPieceCount(parseInt(e.target.value) || 0)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white font-mono"
+                    className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-white font-mono"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 font-medium mb-1">Floor Scale / Table ID</label>
+                  <label className="block text-slate-400 font-medium mb-1">Scale / Calibration Table ID</label>
                   <input
                     type="text"
                     value={scaleId}
                     onChange={(e) => setScaleId(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white"
+                    className="w-full bg-slate-950 border border-slate-700 rounded p-1.5 text-white font-mono"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-slate-400 font-medium mb-1">Floor Operator Notes</label>
+                <label className="block text-slate-400 font-medium mb-1">Operator Notes / Defect Observations</label>
                 <textarea
                   rows={2}
+                  placeholder="Record ply count, roll shrinkage, fabric shade match..."
                   value={employeeNotes}
                   onChange={(e) => setEmployeeNotes(e.target.value)}
-                  placeholder="Record edge tears, machine tension remarks, or reason for scrap variance..."
-                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-xs"
+                  className="w-full bg-slate-950 border border-slate-700 rounded p-2 text-white text-xs focus:outline-none"
                 />
               </div>
+
+              {/* LIVE CROSS-VERIFICATION & ERROR CALCULATION PREVIEW */}
+              {measuredOutputWeight > 0 && (
+                <div className="p-3 bg-slate-900 border border-slate-700 rounded space-y-2">
+                  <div className="flex items-center justify-between font-bold text-slate-200">
+                    <span>Live Cross-Verification & Weight Discrepancy Error</span>
+                    <Badge variant="info">Realtime Formula</Badge>
+                  </div>
+
+                  {(() => {
+                    const mgrAssigned = selectedTaskForEntry.manager_assigned_weight_kg || 90.0;
+                    const cross = verifyFloorWeights(measuredOutputWeight, mgrAssigned);
+
+                    return (
+                      <div className="space-y-1.5 text-[11px]">
+                        <div className="grid grid-cols-3 gap-2 text-center">
+                          <div className="bg-slate-950 p-1.5 rounded">
+                            <span className="text-[10px] text-slate-500 block">Supervisor Target</span>
+                            <span className="mono-num font-bold text-white">{mgrAssigned} kg</span>
+                          </div>
+                          <div className="bg-slate-950 p-1.5 rounded">
+                            <span className="text-[10px] text-slate-500 block">Employee Output</span>
+                            <span className="mono-num font-bold text-sky-400">{measuredOutputWeight} kg</span>
+                          </div>
+                          <div className="bg-slate-950 p-1.5 rounded">
+                            <span className="text-[10px] text-slate-500 block">Scrap Byproduct</span>
+                            <span className="mono-num font-bold text-amber-400">{measuredScrapWeight} kg</span>
+                          </div>
+                        </div>
+
+                        <div className="p-2 rounded bg-slate-950 border border-slate-800 flex items-center justify-between">
+                          <span className="text-slate-400">Discrepancy Error:</span>
+                          <span className={`mono-num font-bold ${cross.status === 'matched' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {cross.discrepancyKg} kg variance ({cross.discrepancyPct}%)
+                          </span>
+                        </div>
+
+                        <div className="text-[10px] text-slate-300 italic">
+                          {cross.message}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
 
               <div className="pt-2 flex justify-end gap-2 border-t border-slate-800">
                 <button
@@ -908,9 +712,9 @@ export default function TasksPage() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 bg-primary font-semibold text-primary-foreground rounded hover:bg-primary/90"
+                  className="px-4 py-1.5 bg-primary font-semibold text-primary-foreground rounded hover:bg-primary/90 shadow-sm"
                 >
-                  Confirm & Submit Weight
+                  Submit Floor Weight & Complete Task
                 </button>
               </div>
             </form>
@@ -918,30 +722,37 @@ export default function TasksPage() {
         </div>
       )}
 
-      {/* MODAL: ASSIGN NEW TASK */}
+      {/* MODAL: ASSIGN NEW TASK (Management Only) */}
       {isNewTaskOpen && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
           <div className="bg-[#111726] border border-slate-700 rounded-lg max-w-lg w-full p-6 shadow-2xl space-y-4 text-xs">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h2 className="text-sm font-bold text-white uppercase tracking-wider">
-                Assign Stage Task & Target Weight
+                Assign Production Floor Task
               </h2>
               <button onClick={() => setIsNewTaskOpen(false)} className="text-slate-400 hover:text-white">✕</button>
             </div>
 
             <form onSubmit={handleCreateTask} className="space-y-3.5">
               <div>
-                <label className="block text-slate-400 font-medium mb-1">Stage *</label>
+                <label className="block text-slate-400 font-medium mb-1">
+                  Active Production Stage *
+                </label>
                 <select
                   required
                   value={selectedStageLogId}
-                  onChange={(e) => setSelectedStageLogId(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedStageLogId(e.target.value);
+                    const log = stageLogs.find((l) => l.id === e.target.value);
+                    if (log?.department_id) setSelectedDeptId(log.department_id);
+                    if (log?.input_weight_kg) setAssignedTargetWeight(log.input_weight_kg);
+                  }}
                   className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white font-mono"
                 >
-                  <option value="">-- Choose pipeline stage --</option>
-                  {stageLogs.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      Stage {s.stage_order}: {s.stage_name} ({s.status})
+                  <option value="">-- Choose active stage --</option>
+                  {stageLogs.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      Stage #{l.stage_order}: {l.stage_name} ({l.department_name})
                     </option>
                   ))}
                 </select>
@@ -949,7 +760,7 @@ export default function TasksPage() {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-medium mb-1">Target Department *</label>
+                  <label className="block text-slate-400 font-medium mb-1">Department *</label>
                   <select
                     required
                     value={selectedDeptId}
@@ -966,7 +777,7 @@ export default function TasksPage() {
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 font-medium mb-1">Assignee Employee *</label>
+                  <label className="block text-slate-400 font-medium mb-1">Assign to Employee *</label>
                   <select
                     required
                     value={selectedEmployeeId}
@@ -974,9 +785,9 @@ export default function TasksPage() {
                     className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white"
                   >
                     <option value="">-- Select employee --</option>
-                    {users.map((u) => (
+                    {users.filter((u) => u.active).map((u) => (
                       <option key={u.id} value={u.id}>
-                        {u.full_name} ({u.role.toUpperCase()})
+                        {u.full_name} ({u.role}{u.department_name ? ` - ${u.department_name}` : ''})
                       </option>
                     ))}
                   </select>
@@ -986,12 +797,11 @@ export default function TasksPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-slate-400 font-medium mb-1">
-                    Supervisor Target Weight (kg) *
+                    Supervisor Target Weight (kg)
                   </label>
                   <input
                     type="number"
                     step="0.01"
-                    required
                     value={assignedTargetWeight}
                     onChange={(e) => setAssignedTargetWeight(parseFloat(e.target.value) || 0)}
                     className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white font-mono"
@@ -999,7 +809,7 @@ export default function TasksPage() {
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 font-medium mb-1">Expected Date *</label>
+                  <label className="block text-slate-400 font-medium mb-1">Expected Completion Date *</label>
                   <input
                     type="date"
                     required
@@ -1011,31 +821,18 @@ export default function TasksPage() {
               </div>
 
               <div>
-                <label className="block text-slate-400 font-medium mb-1">
-                  Task Specification & Guidelines *
-                </label>
+                <label className="block text-slate-400 font-medium mb-1">Task Specification *</label>
                 <textarea
                   required
                   rows={2}
+                  placeholder="e.g. Cut 500 pcs jogger panels per marker. Weigh cut panels and edge scrap on Table Scale #2."
                   value={specification}
                   onChange={(e) => setSpecification(e.target.value)}
-                  placeholder="e.g. Cut 500 pcs size M from Roll #3, inspect Selvage tension"
-                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-xs"
+                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-xs focus:outline-none focus:border-primary"
                 />
               </div>
 
-              <div>
-                <label className="block text-slate-400 font-medium mb-1">Supervisor Notes</label>
-                <input
-                  type="text"
-                  value={taskNotes}
-                  onChange={(e) => setTaskNotes(e.target.value)}
-                  placeholder="Optional internal supervisor instructions"
-                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white"
-                />
-              </div>
-
-              <div className="pt-2 flex justify-end gap-2 border-t border-slate-800">
+              <div className="pt-3 flex justify-end gap-2 border-t border-slate-800">
                 <button
                   type="button"
                   onClick={() => setIsNewTaskOpen(false)}
@@ -1055,20 +852,26 @@ export default function TasksPage() {
         </div>
       )}
 
-      {/* MODAL: EDIT ANY TASK (INCLUDING COMPLETED) */}
+      {/* MODAL: EDIT TASK DETAILS (Edit any completed or in-progress task) */}
       {selectedTaskForEdit && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
-          <div className="bg-[#111726] border border-slate-700 rounded-lg max-w-xl w-full p-6 shadow-2xl space-y-4 text-xs">
+          <div className="bg-[#111726] border border-slate-700 rounded-lg max-w-lg w-full p-6 shadow-2xl space-y-4 text-xs">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div>
-                <h2 className="text-sm font-bold text-white uppercase tracking-wider">
-                  Edit Task #{selectedTaskForEdit.id.slice(-6)}
+                <h2 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                  <CheckSquare className="w-4 h-4 text-primary" />
+                  Edit Task Details #{selectedTaskForEdit.id.slice(-6)}
                 </h2>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  {selectedTaskForEdit.stage_name}
+                  Update task specification, department assignment, target weights, or status (even when completed).
                 </p>
               </div>
-              <button onClick={() => setSelectedTaskForEdit(null)} className="text-slate-400 hover:text-white">✕</button>
+              <button
+                onClick={() => setSelectedTaskForEdit(null)}
+                className="text-slate-400 hover:text-white"
+              >
+                ✕
+              </button>
             </div>
 
             <form onSubmit={handleSaveEditTask} className="space-y-3.5">

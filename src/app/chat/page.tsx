@@ -1,11 +1,10 @@
 'use client';
 
 import React, { useEffect, useState, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { ErpStore } from '@/lib/db/erpStore';
 import { ChatChannel, ChatMessage, Profile, Style } from '@/lib/types/erp';
 import { Badge } from '@/components/ui/Badge';
 import { formatTimeSafe } from '@/lib/utils/format';
-import { INITIAL_CHANNELS, FIXTURE_USERS, CLIENT_OFFER_9414_STYLE } from '@/lib/db/erpStore';
 import {
   MessageSquare,
   Send,
@@ -14,30 +13,22 @@ import {
   User,
   Users,
   Lock,
+  ArrowRight,
   ArrowLeft,
-  Loader2,
 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client';
+
+import { createClient, isSupabaseConfigured } from '@/lib/supabase/client';
 
 export default function ChatPage() {
-  const router = useRouter();
+  const store = ErpStore.getInstance();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const [currentUser, setCurrentUser] = useState<Profile | null>(() => {
-    if (typeof window !== 'undefined') {
-      const savedRole = localStorage.getItem('knitnect_user_role') || 'employee';
-      const savedUid = localStorage.getItem('knitnect_user_id') || '';
-      return FIXTURE_USERS.find(u => u.id === savedUid || u.role === savedRole) || FIXTURE_USERS[2];
-    }
-    return FIXTURE_USERS[2];
-  });
-
+  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
   const [channels, setChannels] = useState<ChatChannel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messageBody, setMessageBody] = useState('');
   const [mobileShowChat, setMobileShowChat] = useState(false);
-  const [loading, setLoading] = useState(false);
 
   // Structured Tagging State
   const [taggedStyleId, setTaggedStyleId] = useState<string>('');
@@ -47,281 +38,142 @@ export default function ChatPage() {
   const [styles, setStyles] = useState<Style[]>([]);
   const [users, setUsers] = useState<Profile[]>([]);
 
+  const isCloudLive = isSupabaseConfigured();
+
   useEffect(() => {
-    let isMounted = true;
-    const supabase = createClient();
+    const refresh = () => {
+      const u = store.getCurrentUser();
+      setCurrentUser(u);
+      const chs = store.getChannelsForUser(u);
+      setChannels(chs);
 
-    const loadChatData = async () => {
-      try {
-        const savedRole = (typeof window !== 'undefined' && localStorage.getItem('knitnect_user_role')) || 'employee';
-        const savedUid = (typeof window !== 'undefined' && localStorage.getItem('knitnect_user_id')) || '';
-        const fallbackUser = FIXTURE_USERS.find(u => u.id === savedUid || u.role === savedRole) || FIXTURE_USERS[2];
-
-        if (isMounted) setCurrentUser(fallbackUser);
-
-        // Try getting Supabase profile if available
-        try {
-          const { data: { user } } = await supabase.auth.getUser();
-          if (user && isMounted) {
-            const { data: profile } = await supabase
-              .from('profiles')
-              .select('*')
-              .eq('id', user.id)
-              .single();
-            if (profile && isMounted) setCurrentUser(profile);
-          }
-        } catch {
-          // ignore
-        }
-
-        // Query channels with fallback to store
-        let activeChannelsList: ChatChannel[] = [];
-        try {
-          const { data: dbChannels } = await supabase
-            .from('chat_channels')
-            .select('*')
-            .order('created_at', { ascending: true });
-
-          if (dbChannels && dbChannels.length > 0) {
-            activeChannelsList = dbChannels as ChatChannel[];
-          }
-        } catch {
-          // ignore
-        }
-
-        if (activeChannelsList.length === 0) {
-          activeChannelsList = INITIAL_CHANNELS;
-        }
-
-        if (isMounted) {
-          setChannels(activeChannelsList);
-          const initialChannel = activeChannelId || activeChannelsList[0]?.id || '';
-          setActiveChannelId(initialChannel);
-
-          if (initialChannel) {
-            try {
-              const { data: dbMessages } = await supabase
-                .from('chat_messages')
-                .select('*')
-                .eq('channel_id', initialChannel)
-                .order('created_at', { ascending: true });
-
-              if (dbMessages && dbMessages.length > 0 && isMounted) {
-                setMessages(dbMessages as ChatMessage[]);
-              } else if (isMounted) {
-                setMessages([]);
-              }
-            } catch {
-              if (isMounted) {
-                setMessages([]);
-              }
-            }
-          }
-        }
-
-        // Load styles & profiles for tagging
-        try {
-          const { data: dbStyles } = await supabase.from('styles').select('*');
-          if (dbStyles && dbStyles.length > 0 && isMounted) {
-            setStyles(dbStyles as Style[]);
-          } else if (isMounted) {
-            setStyles([CLIENT_OFFER_9414_STYLE]);
-          }
-        } catch {
-          if (isMounted) setStyles([CLIENT_OFFER_9414_STYLE]);
-        }
-
-        try {
-          const { data: dbUsers } = await supabase.from('profiles').select('*');
-          if (dbUsers && dbUsers.length > 0 && isMounted) {
-            setUsers(dbUsers as Profile[]);
-          } else if (isMounted) {
-            setUsers(FIXTURE_USERS);
-          }
-        } catch {
-          if (isMounted) setUsers(FIXTURE_USERS);
-        }
-      } catch (err) {
-        console.error('Failed to load chat data:', err);
-      } finally {
-        if (isMounted) setLoading(false);
+      const activeId = activeChannelId || chs[0]?.id || '';
+      if (!activeChannelId && activeId) {
+        setActiveChannelId(activeId);
       }
+
+      if (activeId) {
+        setMessages(store.getMessagesForChannel(activeId));
+      }
+
+      setStyles(store.getStyles(u.role));
+      setUsers(store.getUsers());
     };
 
-    loadChatData();
+    refresh();
+    const unsub = store.subscribe(refresh);
+    return unsub;
+  }, [store, activeChannelId]);
 
-    // Subscribe to channels updates for real-time updates
-    const channelsSub = supabase
-      .channel('realtime:all_chat_channels')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'chat_channels',
-        },
-        async () => {
-          const { data } = await supabase
-            .from('chat_channels')
-            .select('*')
-            .order('created_at', { ascending: true });
-          if (data && isMounted) {
-            setChannels(data as ChatChannel[]);
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      isMounted = false;
-      supabase.removeChannel(channelsSub);
-    };
-  }, [router, activeChannelId]);
-
-  // Realtime subscription for messages in active channel
+  // Supabase Realtime synchronization (Multi-device live broadcast across all channels)
   useEffect(() => {
-    if (!activeChannelId) return;
+    if (!isCloudLive) return;
 
     const supabase = createClient();
 
-    // Fetch messages for active channel when activeChannelId changes
-    supabase
-      .from('chat_messages')
-      .select('*')
-      .eq('channel_id', activeChannelId)
-      .order('created_at', { ascending: true })
-      .then(({ data, error }: { data: any; error: any }) => {
-        if (!error && data && data.length > 0) {
-          setMessages(data as ChatMessage[]);
-        }
-      });
+    // 1. Fetch channel messages from Supabase for current channel
+    if (activeChannelId) {
+      supabase
+        .from('chat_messages')
+        .select('*')
+        .eq('channel_id', activeChannelId)
+        .order('created_at', { ascending: true })
+        .then(({ data, error }) => {
+          if (!error && data && data.length > 0) {
+            data.forEach((m) => store.receiveExternalChatMessage(m as ChatMessage));
+            setMessages(store.getMessagesForChannel(activeChannelId));
+          } else if (error) {
+            console.warn('Could not fetch cloud chat messages:', error.message);
+          }
+        });
+    }
 
-    // Subscribe to new messages for active channel
-    const messageSub = supabase
-      .channel(`realtime:chat_channel_${activeChannelId}`)
+    // 2. Subscribe to realtime inserts across all channels (updates sidebar previews + active chat)
+    const channel = supabase
+      .channel('realtime:all_chat_messages')
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'chat_messages',
-          filter: `channel_id=eq.${activeChannelId}`,
         },
-        (payload: any) => {
+        (payload) => {
           const newMsg = payload.new as ChatMessage;
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === newMsg.id)) return prev;
-            return [...prev, newMsg];
-          });
+          store.receiveExternalChatMessage(newMsg);
+          if (activeChannelId) {
+            setMessages(store.getMessagesForChannel(activeChannelId));
+          }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('Supabase Realtime status:', status);
+      });
 
     return () => {
-      supabase.removeChannel(messageSub);
+      supabase.removeChannel(channel);
     };
-  }, [activeChannelId]);
+  }, [isCloudLive, activeChannelId, store]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSelectChannel = async (channelId: string) => {
+  const handleSelectChannel = (channelId: string) => {
     setActiveChannelId(channelId);
+    setMessages(store.getMessagesForChannel(channelId));
     setMobileShowChat(true);
-
-    const supabase = createClient();
-    try {
-      const { data } = await supabase
-        .from('chat_messages')
-        .select('*')
-        .eq('channel_id', channelId)
-        .order('created_at', { ascending: true });
-
-      if (data && data.length > 0) {
-        setMessages(data as ChatMessage[]);
-      } else {
-        setMessages([]);
-      }
-    } catch {
-      setMessages([]);
-    }
   };
 
-  const handleSendMessage = async (e: React.FormEvent) => {
+  const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!messageBody.trim() || !activeChannelId || !currentUser) return;
+    if (!messageBody.trim() || !activeChannelId) return;
 
-    const trimmedBody = messageBody.trim();
-    const style = taggedStyleId ? styles.find((s) => s.id === taggedStyleId) : undefined;
-    const taggedUser = taggedUserId ? users.find((u) => u.id === taggedUserId) : undefined;
+    const localMsg = store.sendChatMessage(
+      activeChannelId,
+      currentUser.id,
+      messageBody.trim(),
+      taggedStyleId || undefined,
+      taggedUserId || undefined
+    );
 
-    const supabase = createClient();
-    const msgId = crypto.randomUUID();
-    const nowIso = new Date().toISOString();
+    // If Supabase is configured, broadcast message to Postgres Realtime
+    if (isCloudLive) {
+      const supabase = createClient();
+      const style = taggedStyleId ? styles.find((s) => s.id === taggedStyleId) : undefined;
+      const taggedUser = taggedUserId ? users.find((u) => u.id === taggedUserId) : undefined;
 
-    const newMsgObj: ChatMessage = {
-      id: msgId,
-      channel_id: activeChannelId,
-      sender_id: currentUser.id,
-      sender_name: currentUser.full_name || 'Staff Member',
-      sender_role: currentUser.role,
-      body: trimmedBody,
-      tagged_style_id: taggedStyleId || undefined,
-      tagged_style_number: style?.style_number || undefined,
-      tagged_user_id: taggedUserId || undefined,
-      tagged_user_name: taggedUser?.full_name || undefined,
-      created_at: nowIso,
-    };
+      supabase
+        .from('chat_messages')
+        .insert({
+          id: localMsg.id,
+          channel_id: activeChannelId,
+          sender_id: currentUser.id,
+          sender_name: currentUser.full_name,
+          sender_role: currentUser.role,
+          body: messageBody.trim(),
+          tagged_style_id: taggedStyleId || null,
+          tagged_style_number: style?.style_number || null,
+          tagged_user_id: taggedUserId || null,
+          tagged_user_name: taggedUser?.full_name || null,
+          created_at: localMsg.created_at,
+        })
+        .then(({ error }) => {
+          if (error) {
+            console.error('Supabase chat sync error:', error.message);
+            alert(`⚠️ Supabase Cloud Sync Error: "${error.message}"\n\nPlease ensure you ran the SQL migration script in your Supabase SQL Editor and that NEXT_PUBLIC_SUPABASE_URL is https://chbwrpasfuschpcavxdl.supabase.co`);
+          }
+        });
+    }
 
-    // Optimistic local state update
-    setMessages((prev) => [...prev, newMsgObj]);
     setMessageBody('');
     setTaggedStyleId('');
     setTaggedUserId('');
     setShowTagMenu(false);
-
-    // Persist to Supabase
-    try {
-      await supabase.from('chat_messages').insert({
-        id: msgId,
-        channel_id: activeChannelId,
-        sender_id: currentUser.id,
-        sender_name: currentUser.full_name || 'Staff Member',
-        sender_role: currentUser.role,
-        body: trimmedBody,
-        tagged_style_id: taggedStyleId || null,
-        tagged_style_number: style?.style_number || null,
-        tagged_user_id: taggedUserId || null,
-        tagged_user_name: taggedUser?.full_name || null,
-        created_at: nowIso,
-      });
-
-      await supabase
-        .from('chat_channels')
-        .update({
-          last_message: trimmedBody,
-          last_message_at: nowIso,
-        })
-        .eq('id', activeChannelId);
-    } catch (err) {
-      console.error('Supabase chat sync error:', err);
-    }
   };
 
-  if (loading) {
-    return (
-      <div className="flex h-[60vh] items-center justify-center">
-        <div className="flex flex-col items-center gap-3 text-slate-400">
-          <Loader2 className="w-8 h-8 animate-spin text-primary" />
-          <p className="text-sm font-mono">Loading operations communications...</p>
-        </div>
-      </div>
-    );
-  }
-
   const activeChannel = channels.find((c) => c.id === activeChannelId) || channels[0];
-  const canTag = currentUser?.role === 'owner' || currentUser?.role === 'manager';
+  const canTag = currentUser.role === 'owner' || currentUser.role === 'manager';
 
   return (
     <div className="h-[calc(100dvh-7.5rem)] md:h-[calc(100vh-6.5rem)] flex flex-col space-y-2 sm:space-y-4">
@@ -341,16 +193,26 @@ export default function ChatPage() {
 
         {/* Live Cloud Sync Status Badge */}
         <div className="flex items-center gap-2">
-          <span className="px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-[10px] sm:text-[11px] font-mono bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center gap-1.5 shadow-sm">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="hidden xs:inline">Realtime </span>Live
-          </span>
+          {isCloudLive ? (
+            <span className="px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-[10px] sm:text-[11px] font-mono bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center gap-1.5 shadow-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="hidden xs:inline">Realtime </span>Live
+            </span>
+          ) : (
+            <span
+              className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1.5"
+              title="Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to Vercel for multi-device realtime chat."
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+              Local
+            </span>
+          )}
         </div>
       </div>
 
       {/* Main Chat Interface */}
       <div className="flex-1 flex bg-[#101625] border border-slate-800 rounded overflow-hidden min-h-0">
-        {/* Left Sidebar: Channels List */}
+        {/* Left Sidebar: Channels List (Full width on mobile until a channel is selected) */}
         <div className={`w-full md:w-72 bg-[#0d1320] border-r border-slate-800 flex flex-col flex-shrink-0 ${mobileShowChat ? 'hidden md:flex' : 'flex'}`}>
           <div className="p-3 border-b border-slate-800 text-[11px] font-semibold text-slate-500 uppercase tracking-wider flex items-center justify-between">
             <span>Available Channels ({channels.length})</span>
@@ -395,11 +257,12 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Right Area: Messages + Input */}
+        {/* Right Area: Messages + Input (Full width on mobile when open) */}
         <div className={`flex-1 flex flex-col min-w-0 bg-[#0b0f19] ${!mobileShowChat ? 'hidden md:flex' : 'flex'}`}>
           {/* Active Channel Header */}
           <div className="h-12 border-b border-slate-800 px-3 sm:px-4 flex items-center justify-between bg-[#0d1322] flex-shrink-0 gap-2">
             <div className="flex items-center gap-2 min-w-0">
+              {/* Back to Channels button on Mobile */}
               <button
                 type="button"
                 onClick={() => setMobileShowChat(false)}
@@ -409,73 +272,65 @@ export default function ChatPage() {
                 <ArrowLeft className="w-4 h-4" />
               </button>
               <span className="text-xs font-bold text-white uppercase tracking-wider truncate">
-                {activeChannel?.name || 'Operations Channel'}
+                {activeChannel?.name || 'Channel'}
               </span>
-              <Badge variant="neutral" className="hidden sm:inline-flex">{activeChannel?.type || 'general'}</Badge>
+              <Badge variant="neutral" className="hidden sm:inline-flex">{activeChannel?.type}</Badge>
             </div>
             <span className="text-[10px] text-slate-500 font-mono hidden sm:inline">
-              Live Realtime Channel Active
+              Live Realtime Channel Synchronization Active
             </span>
           </div>
 
           {/* Messages Stream */}
-          <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3">
+          <div className="flex-1 p-4 overflow-y-auto space-y-3.5">
             {messages.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs gap-2">
-                <MessageSquare className="w-8 h-8 opacity-40" />
-                <p>No messages in this channel yet.</p>
-                <p className="text-[10px] text-slate-600">Send an update below with @style or @person tags.</p>
+              <div className="text-center py-12 text-slate-500 text-xs">
+                No messages yet. Start the conversation below.
               </div>
             ) : (
               messages.map((m) => {
-                const isMe = m.sender_id === currentUser?.id;
-                const roleBadge = m.sender_role;
+                const isMe = m.sender_id === currentUser.id;
 
                 return (
                   <div
                     key={m.id}
-                    className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[85%] sm:max-w-[75%] ${
-                      isMe ? 'ml-auto' : 'mr-auto'
-                    }`}
+                    className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
                   >
-                    <div className="flex items-center gap-2 mb-1 px-1">
-                      <span className="text-[11px] font-semibold text-slate-300">
-                        {m.sender_name || 'Staff Member'}
-                      </span>
-                      <span className={`text-[9px] uppercase px-1.5 py-0.2 rounded font-mono ${
-                        roleBadge === 'owner' ? 'bg-purple-900/40 text-purple-300 border border-purple-800' :
-                        roleBadge === 'manager' ? 'bg-blue-900/40 text-blue-300 border border-blue-800' :
-                        'bg-amber-900/40 text-amber-300 border border-amber-800'
-                      }`}>
-                        {roleBadge}
-                      </span>
-                      <span className="text-[10px] text-slate-500 font-mono">
+                    <div className="flex items-baseline gap-2 mb-1 text-[11px]">
+                      <span className="font-semibold text-slate-300">{m.sender_name}</span>
+                      <Badge variant={m.sender_role === 'owner' ? 'purple' : m.sender_role === 'manager' ? 'info' : 'warning'}>
+                        {m.sender_role}
+                      </Badge>
+                      <span suppressHydrationWarning className="text-[10px] text-slate-500 font-mono">
                         {formatTimeSafe(m.created_at)}
                       </span>
                     </div>
 
                     <div
-                      className={`p-3 rounded-lg text-xs leading-relaxed break-words shadow ${
+                      className={`p-3 rounded-lg max-w-xl text-xs space-y-2 ${
                         isMe
-                          ? 'bg-blue-600 text-white rounded-tr-none'
-                          : 'bg-[#151c2e] text-slate-200 border border-slate-800 rounded-tl-none'
+                          ? 'bg-slate-800 text-slate-100 border border-slate-700'
+                          : 'bg-[#151c2c] text-slate-200 border border-slate-800'
                       }`}
                     >
-                      <p className="whitespace-pre-wrap">{m.body}</p>
+                      <p className="leading-relaxed whitespace-pre-wrap">{m.body}</p>
 
-                      {/* Tag badges */}
-                      {(m.tagged_style_number || m.tagged_user_name) && (
-                        <div className="mt-2 pt-2 border-t border-white/10 flex flex-wrap gap-1.5">
-                          {m.tagged_style_number && (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-mono bg-black/30 px-1.5 py-0.5 rounded text-sky-200">
+                      {/* Clickable Structured Tag Chips per Section 8 */}
+                      {(m.tagged_style_id || m.tagged_user_id) && (
+                        <div className="pt-2 border-t border-slate-700/60 flex flex-wrap gap-2 text-[10px]">
+                          {m.tagged_style_id && (
+                            <a
+                              href={`/styles/${m.tagged_style_id}`}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-950 border border-sky-800 text-sky-300 font-mono hover:bg-sky-900 transition"
+                            >
                               <Layers className="w-3 h-3 text-sky-400" />
-                              Style: {m.tagged_style_number}
-                            </span>
+                              @{m.tagged_style_number || 'Style'} &bull; View Pipeline &rarr;
+                            </a>
                           )}
-                          {m.tagged_user_name && (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-mono bg-black/30 px-1.5 py-0.5 rounded text-amber-200">
-                              <User className="w-3 h-3 text-amber-400" />
-                              {m.tagged_user_name}
+                          {m.tagged_user_id && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-950 border border-indigo-800 text-indigo-300">
+                              <User className="w-3 h-3 text-indigo-400" />
+                              @{m.tagged_user_name || 'Staff'}
                             </span>
                           )}
                         </div>
@@ -488,95 +343,87 @@ export default function ChatPage() {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Tag Selector Pill Menu */}
+          {/* Structured Tag Selector Drawer */}
           {showTagMenu && canTag && (
-            <div className="p-3 bg-[#0d1322] border-t border-slate-800 flex flex-col gap-2">
-              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-                <span>Structured Communication Tagging</span>
-                <button
-                  type="button"
-                  onClick={() => setShowTagMenu(false)}
-                  className="text-slate-400 hover:text-white"
+            <div className="p-3 bg-slate-900 border-t border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 text-xs">
+              <div>
+                <label className="block text-slate-400 font-medium mb-1 flex items-center gap-1">
+                  <Layers className="w-3 h-3 text-sky-400" />
+                  Tag Style (Clickable deep-link chip):
+                </label>
+                <select
+                  value={taggedStyleId}
+                  onChange={(e) => setTaggedStyleId(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-white font-mono text-xs focus:outline-none"
                 >
-                  ✕
-                </button>
+                  <option value="">-- No style tag --</option>
+                  {styles.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      @{s.style_number} — {s.description}
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                {/* Tag Style */}
-                <div>
-                  <label className="text-[10px] text-slate-400 mb-1 flex items-center gap-1">
-                    <Layers className="w-3 h-3 text-sky-400" /> Tag Production Style
-                  </label>
-                  <select
-                    value={taggedStyleId}
-                    onChange={(e) => setTaggedStyleId(e.target.value)}
-                    className="w-full bg-[#101625] border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">None (General Message)</option>
-                    {styles.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.style_number} ({s.garment_category}) - {s.season}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Tag User */}
-                <div>
-                  <label className="text-[10px] text-slate-400 mb-1 flex items-center gap-1">
-                    <User className="w-3 h-3 text-amber-400" /> Tag Staff Member
-                  </label>
-                  <select
-                    value={taggedUserId}
-                    onChange={(e) => setTaggedUserId(e.target.value)}
-                    className="w-full bg-[#101625] border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">None</option>
-                    {users.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.full_name} ({u.role})
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div>
+                <label className="block text-slate-400 font-medium mb-1 flex items-center gap-1">
+                  <User className="w-3 h-3 text-indigo-400" />
+                  Tag Person:
+                </label>
+                <select
+                  value={taggedUserId}
+                  onChange={(e) => setTaggedUserId(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-white text-xs focus:outline-none"
+                >
+                  <option value="">-- No person tag --</option>
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      @{u.full_name} ({u.role})
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
           )}
 
-          {/* Active Tag Indicators */}
+          {/* Active Tags Preview */}
           {(taggedStyleId || taggedUserId) && (
-            <div className="px-3 py-1.5 bg-blue-950/30 border-t border-blue-900/40 flex items-center gap-2 text-[11px]">
-              <span className="text-slate-400">Attached:</span>
+            <div className="px-3 sm:px-4 py-1.5 bg-slate-900 border-t border-slate-800/60 flex items-center gap-2 text-[11px] flex-wrap">
+              <span className="text-slate-400 font-medium">Active tags:</span>
               {taggedStyleId && (
-                <span className="bg-sky-950 text-sky-300 border border-sky-800 px-2 py-0.5 rounded-full flex items-center gap-1">
-                  <Layers className="w-3 h-3" />
-                  {styles.find((s) => s.id === taggedStyleId)?.style_number}
-                  <button type="button" onClick={() => setTaggedStyleId('')} className="ml-1 text-slate-400 hover:text-white">✕</button>
+                <span className="px-2 py-0.5 rounded bg-sky-950 border border-sky-800 text-sky-300 font-mono">
+                  @{styles.find((s) => s.id === taggedStyleId)?.style_number}
                 </span>
               )}
               {taggedUserId && (
-                <span className="bg-amber-950 text-amber-300 border border-amber-800 px-2 py-0.5 rounded-full flex items-center gap-1">
-                  <User className="w-3 h-3" />
-                  {users.find((u) => u.id === taggedUserId)?.full_name}
-                  <button type="button" onClick={() => setTaggedUserId('')} className="ml-1 text-slate-400 hover:text-white">✕</button>
+                <span className="px-2 py-0.5 rounded bg-indigo-950 border border-indigo-800 text-indigo-300">
+                  @{users.find((u) => u.id === taggedUserId)?.full_name}
                 </span>
               )}
+              <button
+                onClick={() => {
+                  setTaggedStyleId('');
+                  setTaggedUserId('');
+                }}
+                className="text-slate-500 hover:text-white text-[10px] ml-1"
+              >
+                Clear tags
+              </button>
             </div>
           )}
 
-          {/* Chat Input Bar */}
-          <form onSubmit={handleSendMessage} className="p-2 sm:p-3 bg-[#0d1322] border-t border-slate-800 flex items-center gap-2">
+          {/* Input Box */}
+          <form onSubmit={handleSendMessage} className="p-2 sm:p-3 border-t border-slate-800 bg-[#0d1322] flex items-center gap-2 flex-shrink-0">
             {canTag && (
               <button
                 type="button"
                 onClick={() => setShowTagMenu(!showTagMenu)}
-                title="Attach style or mention a person"
-                className={`p-2 rounded border transition flex-shrink-0 ${
+                className={`p-2.5 sm:p-2 rounded border transition min-h-[40px] min-w-[40px] flex items-center justify-center ${
                   showTagMenu || taggedStyleId || taggedUserId
-                    ? 'bg-blue-600 text-white border-blue-500'
-                    : 'bg-[#101625] text-slate-400 border-slate-700 hover:text-white'
+                    ? 'bg-sky-950 text-sky-400 border-sky-700'
+                    : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
                 }`}
+                title="Tag @style or @person"
               >
                 <AtSign className="w-4 h-4" />
               </button>
@@ -584,23 +431,22 @@ export default function ChatPage() {
 
             <input
               type="text"
+              placeholder={`Message ${activeChannel?.name || 'channel'}...`}
               value={messageBody}
               onChange={(e) => setMessageBody(e.target.value)}
-              placeholder={
-                activeChannel
-                  ? `Message #${activeChannel.name}...`
-                  : 'Type a message...'
-              }
-              className="flex-1 bg-[#101625] border border-slate-700/80 rounded px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 min-w-0"
+              className="flex-1 bg-slate-900 border border-slate-700 rounded px-3 py-2 sm:py-2 text-sm sm:text-xs text-white placeholder-slate-500 focus:outline-none focus:border-primary min-h-[40px]"
             />
 
             <button
               type="submit"
               disabled={!messageBody.trim()}
-              className="px-3 sm:px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded text-xs font-semibold flex items-center gap-1.5 transition flex-shrink-0"
+              className={`p-2.5 sm:p-2 rounded font-semibold text-xs transition min-h-[40px] min-w-[40px] flex items-center justify-center ${
+                messageBody.trim()
+                  ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                  : 'bg-slate-800 text-slate-600 cursor-not-allowed'
+              }`}
             >
-              <Send className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Send</span>
+              <Send className="w-4 h-4" />
             </button>
           </form>
         </div>

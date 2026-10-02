@@ -1,23 +1,12 @@
 'use client';
 
 import React, { useState } from 'react';
-import { usePathname } from 'next/navigation';
 import { Header } from '@/components/layout/Header';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { MobileBottomNav } from '@/components/layout/MobileBottomNav';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-
-  // Dedicated unauthenticated auth screen — no ERP sidebar or header
-  if (pathname === '/login') {
-    return (
-      <div className="min-h-screen bg-[#0b0f19] text-slate-100 antialiased flex flex-col justify-center">
-        {children}
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-[#0b0f19] text-slate-100 flex flex-col antialiased">

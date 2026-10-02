@@ -1,8 +1,6 @@
 // ============================================================
 // KNITNECT PRODUCTION ERP — STAGE LOSS TRACKING & ANALYTICS
-// Universal Tolerance Rule (smaller of 1 kg or 1%),
-// Cutting Yield Validation (BOM kg/pc vs pcs),
-// Weight (kg) vs Piece (pcs) Tracking Across 15 Stages
+// Real process loss formulas + rolling historical comparison
 // ============================================================
 
 export interface StageLossMetrics {
@@ -24,8 +22,7 @@ export interface WeightCrossVerification {
   managerVerifiedKg: number;
   discrepancyKg: number;
   discrepancyPct: number;
-  toleranceKg: number;
-  status: 'matched' | 'critical_mismatch';
+  status: 'matched' | 'minor_variance' | 'critical_mismatch';
   statusLabel: string;
   message: string;
 }
@@ -56,75 +53,8 @@ export const STAGE_BENCHMARK_LOSS_PCT: Record<string, number> = {
   'Packing': 0.3,
 };
 
-// Re-valued blended fabric cost per kg for style KB13P301X1 (Offer 9414 working file: ~₹432/kg = ₹431.98/kg)
-export const DEFAULT_BLENDED_FABRIC_COST_PER_KG = 431.98;
-
-/**
- * Universal Knitnect Tolerance Rule: Smaller of 1 kg or 1%
- * Evaluates tolerance as min(1.0 kg, 1% of base weight)
- */
-export function getUniversalToleranceKg(baseWeight: number): number {
-  const w = Math.max(0, Number(baseWeight) || 0);
-  return Number(Math.min(1.0, w * 0.01).toFixed(4));
-}
-
-export function isWithinUniversalTolerance(measuredWeight: number, benchmarkWeight: number): boolean {
-  const base = Math.max(measuredWeight, benchmarkWeight);
-  const diff = Math.abs(measuredWeight - benchmarkWeight);
-  const tolerance = getUniversalToleranceKg(base);
-  return diff <= tolerance;
-}
-
-/**
- * Returns tracking unit for stage:
- * Weight tracking up to Cutting (Stages 1-7: 'kg')
- * Piece counts after Cutting (Stages 8-15: 'pcs')
- */
-export function getStageTrackingUnit(stageOrder: number): 'kg' | 'pcs' {
-  return stageOrder <= 7 ? 'kg' : 'pcs';
-}
-
-/**
- * Validates Cut kg against BOM kg/pc * pieces with tolerance warning:
- * Variance = |cutFabricKg - (bomKgPerPiece * cutPieces)|
- * Compares variance against universal tolerance: smaller of 1 kg or 1%
- */
-export function validateCuttingYield(
-  cutFabricKg: number,
-  cutPieces: number,
-  bomKgPerPiece: number
-): {
-  expectedKg: number;
-  varianceKg: number;
-  variancePct: number;
-  toleranceKg: number;
-  isWithinTolerance: boolean;
-  warningMessage?: string;
-} {
-  const pieces = Math.max(0, Number(cutPieces) || 0);
-  const bomRate = Math.max(0, Number(bomKgPerPiece) || 0);
-  const actualKg = Math.max(0, Number(cutFabricKg) || 0);
-
-  const expectedKg = Number((pieces * bomRate).toFixed(4));
-  const varianceKg = Number(Math.abs(actualKg - expectedKg).toFixed(4));
-  const variancePct = expectedKg > 0 ? Number(((varianceKg / expectedKg) * 100).toFixed(2)) : 0;
-  const toleranceKg = getUniversalToleranceKg(expectedKg);
-  const isWithinTolerance = varianceKg <= toleranceKg;
-
-  let warningMessage: string | undefined;
-  if (!isWithinTolerance && actualKg > 0 && pieces > 0) {
-    warningMessage = `Cutting Yield Alert: Cut fabric (${actualKg.toFixed(2)} kg) differs from BOM expected requirement (${expectedKg.toFixed(2)} kg for ${pieces} pcs @ ${bomRate.toFixed(3)} kg/pc) by ${varianceKg.toFixed(2)} kg (${variancePct}%). Exceeds allowable tolerance of ${toleranceKg.toFixed(2)} kg.`;
-  }
-
-  return {
-    expectedKg,
-    varianceKg,
-    variancePct,
-    toleranceKg,
-    isWithinTolerance,
-    warningMessage,
-  };
-}
+// Default fabric material cost per kg from client's Offer 9414 working file
+export const DEFAULT_BLENDED_FABRIC_COST_PER_KG = 486.60;
 
 /**
  * Computes exact process byproduct loss metrics:
@@ -145,12 +75,10 @@ export function computeStageLoss(
   const lossKg = inWt > 0 && outWt <= inWt ? Number((inWt - outWt).toFixed(4)) : 0;
   const lossPct = inWt > 0 ? Number(((lossKg / inWt) * 100).toFixed(2)) : 0;
 
-  // Re-valued blended fabric cost per kg (Offer 9414 true rate ₹431.98/kg)
-  const effectiveRate = Number(
-    blendedCostPerKg && blendedCostPerKg > 0 ? blendedCostPerKg : DEFAULT_BLENDED_FABRIC_COST_PER_KG
-  );
+  // Use style's blended fabric cost, or fallback to client's baseline rate ₹486.60/kg
+  const effectiveRate = Number(blendedCostPerKg && blendedCostPerKg > 0 ? blendedCostPerKg : DEFAULT_BLENDED_FABRIC_COST_PER_KG);
   const lossValue = Number((lossKg * effectiveRate).toFixed(2));
-  const calculationFormula = `${lossKg.toFixed(2)} kg × ₹${effectiveRate.toFixed(2)}/kg = ₹${lossValue.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const calculationFormula = `${lossKg.toFixed(2)} kg × ₹${effectiveRate.toFixed(2)}/kg = ₹${lossValue.toLocaleString('en-IN')}`;
 
   // Determine stage benchmark: historical rolling average if available, else standard baseline
   const matchingHistorical = historicalStageLogs.filter(
@@ -164,11 +92,11 @@ export function computeStageLoss(
   }
 
   const variancePct = Number((lossPct - benchmarkAvgPct).toFixed(2));
-  const isNormal = variancePct <= 1.0;
+  const isNormal = variancePct <= 1.0; // Within 1% threshold is normal byproduct
 
   let diagnosticNote = '';
   if (inWt === 0 || outWt === 0) {
-    diagnosticNote = 'Awaiting floor measurement before and after stage execution.';
+    diagnosticNote = 'Awaiting scale weight measurement before and after process.';
   } else if (variancePct > 2.5) {
     diagnosticNote = `Excess process loss detected (+${variancePct}% vs standard ${benchmarkAvgPct}% benchmark). Potential fabric waste, tension, or moisture loss.`;
   } else if (variancePct > 0.5) {
@@ -196,7 +124,7 @@ export function computeStageLoss(
 
 /**
  * Cross-Verifies Employee Floor Weight vs Manager Supervisor Weight
- * Uses Universal Tolerance Rule: Smaller of 1 kg or 1%
+ * Calculates exact variance kg, variance %, and discrepancy classification.
  */
 export function verifyFloorWeights(
   employeeOutputKg: number,
@@ -211,7 +139,6 @@ export function verifyFloorWeights(
       managerVerifiedKg: mgrWt,
       discrepancyKg: 0,
       discrepancyPct: 0,
-      toleranceKg: 0,
       status: 'matched',
       statusLabel: 'Pending Dual Entry',
       message: 'Both employee floor measurement and manager supervisor weight are required for cross-verification.',
@@ -221,21 +148,30 @@ export function verifyFloorWeights(
   const discrepancyKg = Number(Math.abs(mgrWt - empWt).toFixed(2));
   const base = Math.max(empWt, mgrWt);
   const discrepancyPct = base > 0 ? Number(((discrepancyKg / base) * 100).toFixed(2)) : 0;
-  const toleranceKg = getUniversalToleranceKg(base);
 
-  const isMatched = discrepancyKg <= toleranceKg;
-  const status: 'matched' | 'critical_mismatch' = isMatched ? 'matched' : 'critical_mismatch';
-  const statusLabel = isMatched ? `Verified Match (≤${toleranceKg}kg)` : `CRITICAL MISMATCH (>${toleranceKg}kg)`;
-  const message = isMatched
-    ? `Floor measurement (${empWt}kg) matches supervisor verification (${mgrWt}kg) within allowable tolerance (diff: ${discrepancyKg}kg, tolerance: ${toleranceKg}kg).`
-    : `WEIGHT ERROR ALERT: Discrepancy of ${discrepancyKg}kg exceeds universal tolerance (smaller of 1kg or 1% = ${toleranceKg}kg). Re-weigh required!`;
+  let status: 'matched' | 'minor_variance' | 'critical_mismatch' = 'matched';
+  let statusLabel = 'Verified Match';
+  let message = '';
+
+  if (discrepancyPct <= 1.0) {
+    status = 'matched';
+    statusLabel = 'Verified Match (≤1%)';
+    message = `Floor measurement (${empWt}kg) matches supervisor verification (${mgrWt}kg) within ${discrepancyPct}% precision.`;
+  } else if (discrepancyPct <= 3.0) {
+    status = 'minor_variance';
+    statusLabel = 'Minor Variance (1-3%)';
+    message = `Minor discrepancy of ${discrepancyKg}kg (${discrepancyPct}%). Acceptable tolerance due to moisture or tare weight.`;
+  } else {
+    status = 'critical_mismatch';
+    statusLabel = 'CRITICAL MISMATCH (>3%)';
+    message = `WEIGHT ERROR ALERT: Discrepancy of ${discrepancyKg}kg (${discrepancyPct}%) exceeds quality tolerance. Re-weigh bundle!`;
+  }
 
   return {
     employeeOutputKg: empWt,
     managerVerifiedKg: mgrWt,
     discrepancyKg,
     discrepancyPct,
-    toleranceKg,
     status,
     statusLabel,
     message,
