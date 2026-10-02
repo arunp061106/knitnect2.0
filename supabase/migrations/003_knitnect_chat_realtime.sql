@@ -1,26 +1,26 @@
 -- ============================================================
--- KNITNECT PRODUCTION ERP — CHAT & REALTIME MIGRATION
--- Enables multi-device real-time communication between Owner, Manager, and Employees
+-- KNITNECT PRODUCTION ERP — CHAT REALTIME FIX
+-- Fixes channel ID foreign keys and allows instant multi-device sync
 -- ============================================================
 
--- 1. CHAT CHANNELS TABLE
+-- 1. DROP RESTRICTIVE FOREIGN KEY CONSTRAINT ON CHANNEL_ID
+-- This ensures any channel ID used by the app can send and receive messages without constraint errors
+ALTER TABLE IF EXISTS public.chat_messages DROP CONSTRAINT IF EXISTS chat_messages_channel_id_fkey;
+
+-- 2. ENSURE CHAT TABLES EXIST WITH TEXT IDS
 CREATE TABLE IF NOT EXISTS public.chat_channels (
   id TEXT PRIMARY KEY,
   org_id TEXT DEFAULT '00000000-0000-0000-0000-000000000001',
-  type TEXT NOT NULL CHECK (type IN ('owner_manager', 'owner_employee', 'manager_employee', 'common')),
-  participant_a_id TEXT,
-  participant_b_id TEXT,
-  participant_b_name TEXT,
+  type TEXT NOT NULL,
   name TEXT,
   last_message TEXT,
   last_message_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 2. CHAT MESSAGES TABLE
 CREATE TABLE IF NOT EXISTS public.chat_messages (
   id TEXT PRIMARY KEY,
-  channel_id TEXT NOT NULL REFERENCES public.chat_channels(id) ON DELETE CASCADE,
+  channel_id TEXT NOT NULL,
   sender_id TEXT NOT NULL,
   sender_name TEXT NOT NULL,
   sender_role TEXT,
@@ -32,18 +32,23 @@ CREATE TABLE IF NOT EXISTS public.chat_messages (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 3. INDEX FOR FAST CHANNEL RETRIEVAL
-CREATE INDEX IF NOT EXISTS idx_chat_messages_channel_created ON public.chat_messages(channel_id, created_at ASC);
+-- 3. DISABLE RLS ON CHAT TABLES
+-- Knitnect uses application-layer RBAC. Disabling RLS allows the anon key to write messages across devices
+ALTER TABLE public.chat_channels DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.chat_messages DISABLE ROW LEVEL SECURITY;
 
--- 4. SEED DEFAULT SYSTEM CHANNELS (Idempotent)
+-- 4. SEED ALL ERP CHANNELS
 INSERT INTO public.chat_channels (id, type, name, created_at)
 VALUES 
-  ('ch-common', 'common', 'All Company Operations', now()),
-  ('ch-mgmt', 'owner_manager', 'Executive Management & Costing', now())
+  ('40000000-0000-0000-0000-000000000001', 'common', 'General / Floor Updates', now()),
+  ('40000000-0000-0000-0000-000000000002', 'owner_manager', 'Executive: Owner & Manager', now()),
+  ('40000000-0000-0000-0000-000000000003', 'owner_employee', 'Owner DM: Murugan (Cutting)', now()),
+  ('40000000-0000-0000-0000-000000000004', 'manager_employee', 'Manager DM: Murugan (Cutting)', now()),
+  ('ch-common', 'common', 'General / Floor Updates', now()),
+  ('ch-mgmt', 'owner_manager', 'Executive: Owner & Manager', now())
 ON CONFLICT (id) DO NOTHING;
 
--- 5. ENABLE REALTIME BROADCASTING ON CHAT MESSAGES
--- This ensures when an employee sends a message, it appears instantly on the owner's screen without refreshing
+-- 5. ENSURE REALTIME REPLICATION IS ENABLED
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -55,13 +60,3 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.chat_messages;
   END IF;
 END $$;
-
--- 6. ROW LEVEL SECURITY (Permissive for MVP / cross-device operations)
-ALTER TABLE public.chat_channels ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.chat_messages ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "Public access chat_channels" ON public.chat_channels;
-CREATE POLICY "Public access chat_channels" ON public.chat_channels FOR ALL USING (true) WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Public access chat_messages" ON public.chat_messages;
-CREATE POLICY "Public access chat_messages" ON public.chat_messages FOR ALL USING (true) WITH CHECK (true);
