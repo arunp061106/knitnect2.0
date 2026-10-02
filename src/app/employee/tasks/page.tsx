@@ -150,23 +150,23 @@ export default function EmployeeTasksPage() {
       )}
 
       {/* Stats row */}
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
         {[
           { label: 'Total', value: stats.total, color: 'text-slate-200', bg: 'bg-slate-500/10 border-slate-500/20' },
           { label: 'Pending', value: stats.pending, color: 'text-amber-300', bg: 'bg-amber-500/10 border-amber-500/20' },
           { label: 'In Progress', value: stats.inProgress, color: 'text-blue-300', bg: 'bg-blue-500/10 border-blue-500/20' },
           { label: 'Completed', value: stats.completed, color: 'text-emerald-300', bg: 'bg-emerald-500/10 border-emerald-500/20' },
         ].map((stat) => (
-          <div key={stat.label} className={`rounded-xl border p-3 ${stat.bg}`}>
-            <div className={`text-xl font-bold mono-num ${stat.color}`}>{stat.value}</div>
-            <div className="text-[11px] text-slate-500 mt-0.5">{stat.label}</div>
+          <div key={stat.label} className={`rounded-xl border p-2.5 sm:p-3 ${stat.bg}`}>
+            <div className={`text-lg sm:text-xl font-bold mono-num ${stat.color}`}>{stat.value}</div>
+            <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5">{stat.label}</div>
           </div>
         ))}
       </div>
 
       {/* Tasks list */}
       {tasks.length === 0 ? (
-        <div className="rounded-xl border border-slate-800/50 bg-slate-900/30 p-12 text-center">
+        <div className="rounded-xl border border-slate-800/50 bg-slate-900/30 p-8 sm:p-12 text-center">
           <CheckSquare className="w-8 h-8 text-slate-600 mx-auto mb-3" />
           <p className="text-slate-400 text-sm font-medium">No tasks assigned to you yet.</p>
           <p className="text-slate-600 text-xs mt-1">Your manager will assign tasks to you shortly.</p>
@@ -180,10 +180,10 @@ export default function EmployeeTasksPage() {
             return (
               <div
                 key={task.id}
-                className="glass-card p-4 hover:border-slate-600/50 transition-all animate-fadeInUp"
+                className="glass-card p-3.5 sm:p-4 hover:border-slate-600/50 transition-all animate-fadeInUp"
                 style={{ animationDelay: `${i * 40}ms` }}
               >
-                <div className="flex flex-col sm:flex-row sm:items-start gap-4">
+                <div className="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4">
                   {/* Stage number */}
                   <div className="flex-shrink-0">
                     <div className={`stage-dot ${
@@ -195,7 +195,7 @@ export default function EmployeeTasksPage() {
 
                   {/* Task info */}
                   <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2 mb-2">
+                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mb-2">
                       <span className="text-sm font-semibold text-white">{task.stage_name}</span>
                       <Badge variant={statusVariant} dot>
                         {task.status.replace(/_/g, ' ')}
@@ -213,7 +213,7 @@ export default function EmployeeTasksPage() {
 
                     {/* Measurement status */}
                     {hasMeasurement ? (
-                      <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-400 mb-3">
+                      <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-[11px] text-slate-400 mb-3 bg-slate-900/40 p-2 rounded-lg border border-slate-800/40">
                         <span className="flex items-center gap-1.5 text-emerald-400">
                           <Scale className="w-3.5 h-3.5" />
                           <span className="font-semibold mono-num">{task.employee_measured_output_weight_kg} kg</span> measured
@@ -222,22 +222,22 @@ export default function EmployeeTasksPage() {
                         <span>Pcs: <span className="text-slate-300 font-mono">{task.employee_piece_count || 0}</span></span>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-1.5 text-[11px] text-amber-400/80 mb-3">
-                        <AlertCircle className="w-3.5 h-3.5" />
+                      <div className="flex items-center gap-1.5 text-[11px] text-amber-400/80 mb-3 bg-amber-500/5 p-2 rounded-lg border border-amber-500/15">
+                        <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
                         Floor measurement pending
                       </div>
                     )}
 
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-2 border-t border-slate-800/40">
                       <div className="flex items-center gap-2 text-[11px] text-slate-500">
-                        <Clock className="w-3.5 h-3.5" />
+                        <Clock className="w-3.5 h-3.5 flex-shrink-0" />
                         Due: <span className="text-slate-300">{task.expected_completion_date}</span>
                       </div>
 
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <button
                           onClick={() => handleOpenMeasurement(task)}
-                          className="btn btn-ghost text-[11px]"
+                          className="btn btn-ghost text-[11px] flex-1 sm:flex-initial"
                         >
                           <Scale className="w-3 h-3" />
                           {hasMeasurement ? 'Edit Weight' : 'Enter Weight'}
@@ -246,7 +246,7 @@ export default function EmployeeTasksPage() {
                         {task.status !== 'completed' && (
                           <button
                             onClick={() => handleMarkComplete(task.id)}
-                            className="btn btn-success text-[11px]"
+                            className="btn btn-success text-[11px] flex-1 sm:flex-initial"
                           >
                             <CheckCircle2 className="w-3 h-3" />
                             Mark Complete
@@ -265,8 +265,8 @@ export default function EmployeeTasksPage() {
       {/* Measurement Modal */}
       {selectedTask && (
         <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setSelectedTask(null); }}>
-          <div className="modal-panel max-w-lg w-full p-6">
-            <div className="flex items-start justify-between mb-5">
+          <div className="modal-panel max-w-lg w-full p-4 sm:p-6">
+            <div className="flex items-start justify-between mb-4 sm:mb-5">
               <div>
                 <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-1">Floor Weight Entry</p>
                 <h2 className="text-base font-bold text-white">{selectedTask.stage_name}</h2>
@@ -292,7 +292,7 @@ export default function EmployeeTasksPage() {
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="form-label">Your Measured Output (kg) *</label>
                   <input
@@ -300,7 +300,7 @@ export default function EmployeeTasksPage() {
                     step="0.01"
                     required
                     min="0.01"
-                    className="form-input mono-num"
+                    className="form-input mono-num text-sm sm:text-xs min-h-[40px]"
                     value={measuredOutput || ''}
                     onChange={(e) => setMeasuredOutput(parseFloat(e.target.value) || 0)}
                     placeholder="e.g. 80.00"
@@ -312,7 +312,7 @@ export default function EmployeeTasksPage() {
                     type="number"
                     step="0.01"
                     min="0"
-                    className="form-input mono-num"
+                    className="form-input mono-num text-sm sm:text-xs min-h-[40px]"
                     value={scrapWeight || ''}
                     onChange={(e) => setScrapWeight(parseFloat(e.target.value) || 0)}
                     placeholder="e.g. 10.00"
@@ -320,13 +320,13 @@ export default function EmployeeTasksPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="form-label">Pieces Processed</label>
                   <input
                     type="number"
                     min="0"
-                    className="form-input mono-num"
+                    className="form-input mono-num text-sm sm:text-xs min-h-[40px]"
                     value={pieceCount}
                     onChange={(e) => setPieceCount(parseInt(e.target.value) || 0)}
                   />
@@ -335,7 +335,7 @@ export default function EmployeeTasksPage() {
                   <label className="form-label">Scale / Table ID</label>
                   <input
                     type="text"
-                    className="form-input"
+                    className="form-input text-sm sm:text-xs min-h-[40px]"
                     value={scaleId}
                     onChange={(e) => setScaleId(e.target.value)}
                   />

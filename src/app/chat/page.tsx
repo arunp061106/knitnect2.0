@@ -176,17 +176,17 @@ export default function ChatPage() {
   const canTag = currentUser.role === 'owner' || currentUser.role === 'manager';
 
   return (
-    <div className="h-[calc(100vh-6.5rem)] flex flex-col space-y-4">
+    <div className="h-[calc(100dvh-7.5rem)] md:h-[calc(100vh-6.5rem)] flex flex-col space-y-2 sm:space-y-4">
       {/* Top Header */}
-      <div className="flex items-center justify-between pb-3 border-b border-slate-800 flex-shrink-0">
+      <div className="flex items-center justify-between pb-2 sm:pb-3 border-b border-slate-800 flex-shrink-0">
         <div>
           <div className="flex items-center gap-2">
-            <MessageSquare className="w-5 h-5 text-primary" />
-            <h1 className="text-xl font-bold tracking-tight text-white">
-              Operations Communications Network
+            <MessageSquare className="w-4 h-4 sm:w-5 sm:h-5 text-primary flex-shrink-0" />
+            <h1 className="text-sm sm:text-xl font-bold tracking-tight text-white truncate max-w-[200px] xs:max-w-xs sm:max-w-none">
+              Operations Communications
             </h1>
           </div>
-          <p className="text-xs text-slate-400 mt-1">
+          <p className="hidden sm:block text-xs text-slate-400 mt-1">
             Section 8: 4 isolated communication surfaces with structured @style and @person deep-linking tags.
           </p>
         </div>
@@ -194,17 +194,17 @@ export default function ChatPage() {
         {/* Live Cloud Sync Status Badge */}
         <div className="flex items-center gap-2">
           {isCloudLive ? (
-            <span className="px-2.5 py-1 rounded-full text-[11px] font-mono bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center gap-1.5 shadow-sm">
+            <span className="px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-[10px] sm:text-[11px] font-mono bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center gap-1.5 shadow-sm">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              Supabase Realtime Live
+              <span className="hidden xs:inline">Realtime </span>Live
             </span>
           ) : (
             <span
-              className="px-2.5 py-1 rounded-full text-[11px] font-mono bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1.5"
+              className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1.5"
               title="Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to Vercel for multi-device realtime chat."
             >
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-              Local Store Mode
+              Local
             </span>
           )}
         </div>
@@ -345,7 +345,7 @@ export default function ChatPage() {
 
           {/* Structured Tag Selector Drawer */}
           {showTagMenu && canTag && (
-            <div className="p-3 bg-slate-900 border-t border-slate-800 grid grid-cols-2 gap-3 text-xs">
+            <div className="p-3 bg-slate-900 border-t border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 text-xs">
               <div>
                 <label className="block text-slate-400 font-medium mb-1 flex items-center gap-1">
                   <Layers className="w-3 h-3 text-sky-400" />
@@ -354,7 +354,7 @@ export default function ChatPage() {
                 <select
                   value={taggedStyleId}
                   onChange={(e) => setTaggedStyleId(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white font-mono text-xs focus:outline-none"
+                  className="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-white font-mono text-xs focus:outline-none"
                 >
                   <option value="">-- No style tag --</option>
                   {styles.map((s) => (
@@ -373,7 +373,7 @@ export default function ChatPage() {
                 <select
                   value={taggedUserId}
                   onChange={(e) => setTaggedUserId(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white text-xs focus:outline-none"
+                  className="w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-white text-xs focus:outline-none"
                 >
                   <option value="">-- No person tag --</option>
                   {users.map((u) => (
@@ -388,8 +388,8 @@ export default function ChatPage() {
 
           {/* Active Tags Preview */}
           {(taggedStyleId || taggedUserId) && (
-            <div className="px-4 py-1.5 bg-slate-900 border-t border-slate-800/60 flex items-center gap-2 text-[11px]">
-              <span className="text-slate-400 font-medium">Active structured tags:</span>
+            <div className="px-3 sm:px-4 py-1.5 bg-slate-900 border-t border-slate-800/60 flex items-center gap-2 text-[11px] flex-wrap">
+              <span className="text-slate-400 font-medium">Active tags:</span>
               {taggedStyleId && (
                 <span className="px-2 py-0.5 rounded bg-sky-950 border border-sky-800 text-sky-300 font-mono">
                   @{styles.find((s) => s.id === taggedStyleId)?.style_number}
@@ -413,12 +413,12 @@ export default function ChatPage() {
           )}
 
           {/* Input Box */}
-          <form onSubmit={handleSendMessage} className="p-3 border-t border-slate-800 bg-[#0d1322] flex items-center gap-2 flex-shrink-0">
+          <form onSubmit={handleSendMessage} className="p-2 sm:p-3 border-t border-slate-800 bg-[#0d1322] flex items-center gap-2 flex-shrink-0">
             {canTag && (
               <button
                 type="button"
                 onClick={() => setShowTagMenu(!showTagMenu)}
-                className={`p-2 rounded border transition ${
+                className={`p-2.5 sm:p-2 rounded border transition min-h-[40px] min-w-[40px] flex items-center justify-center ${
                   showTagMenu || taggedStyleId || taggedUserId
                     ? 'bg-sky-950 text-sky-400 border-sky-700'
                     : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
@@ -434,13 +434,13 @@ export default function ChatPage() {
               placeholder={`Message ${activeChannel?.name || 'channel'}...`}
               value={messageBody}
               onChange={(e) => setMessageBody(e.target.value)}
-              className="flex-1 bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-primary"
+              className="flex-1 bg-slate-900 border border-slate-700 rounded px-3 py-2 sm:py-2 text-sm sm:text-xs text-white placeholder-slate-500 focus:outline-none focus:border-primary min-h-[40px]"
             />
 
             <button
               type="submit"
               disabled={!messageBody.trim()}
-              className={`p-2 rounded font-semibold text-xs transition ${
+              className={`p-2.5 sm:p-2 rounded font-semibold text-xs transition min-h-[40px] min-w-[40px] flex items-center justify-center ${
                 messageBody.trim()
                   ? 'bg-primary text-primary-foreground hover:bg-primary/90'
                   : 'bg-slate-800 text-slate-600 cursor-not-allowed'

@@ -35,6 +35,8 @@
 
 html {
   scroll-behavior: smooth;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -44,6 +46,15 @@ body {
   letter-spacing: -0.012em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  max-width: 100%;
+  overflow-x: hidden;
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Smooth touch momentum scrolling for mobile horizontal tables */
+.overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
 }
 
 /* ---- Premium Card / Glass styles ---- */

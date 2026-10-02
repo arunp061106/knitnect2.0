@@ -85,19 +85,19 @@ export default function EmployeePipelinePage() {
       </div>
 
       {/* Overall progress card */}
-      <div className="glass-card p-5">
-        <div className="flex items-start justify-between gap-4 mb-4">
+      <div className="glass-card p-3.5 sm:p-5">
+        <div className="flex items-start justify-between gap-3 sm:gap-4 mb-4">
           <div>
             <div className="text-[10px] uppercase font-bold text-slate-500 tracking-wider mb-1">Overall Production Progress</div>
-            <div className="text-2xl font-bold mono-num text-white">
+            <div className="text-xl sm:text-2xl font-bold mono-num text-white">
               {completedCount}
-              <span className="text-slate-500 text-base font-normal"> / {totalStages}</span>
+              <span className="text-slate-500 text-sm sm:text-base font-normal"> / {totalStages}</span>
             </div>
-            <div className="text-xs text-slate-400 mt-0.5">stages completed across all departments</div>
+            <div className="text-[11px] sm:text-xs text-slate-400 mt-0.5">stages completed across all departments</div>
           </div>
           <div className="text-right">
-            <div className="text-3xl font-bold gradient-text mono-num">{progressPct}%</div>
-            <div className="text-[11px] text-slate-500 mt-0.5">completion</div>
+            <div className="text-2xl sm:text-3xl font-bold gradient-text mono-num">{progressPct}%</div>
+            <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5">completion</div>
           </div>
         </div>
 
@@ -105,7 +105,7 @@ export default function EmployeePipelinePage() {
           <div className="progress-fill" style={{ width: `${progressPct}%` }} />
         </div>
 
-        <div className="mt-3 flex items-center gap-4 text-xs text-slate-500">
+        <div className="mt-3 flex flex-wrap items-center gap-2.5 sm:gap-4 text-[11px] sm:text-xs text-slate-500">
           <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-400" />
             {completedCount} Done

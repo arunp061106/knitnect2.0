@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Header } from '@/components/layout/Header';
 import { Sidebar } from '@/components/layout/Sidebar';
+import { MobileBottomNav } from '@/components/layout/MobileBottomNav';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -12,10 +13,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <Header onToggleSidebar={() => setMobileMenuOpen(!mobileMenuOpen)} />
       <div className="flex flex-1 relative">
         <Sidebar isOpen={mobileMenuOpen} onClose={() => setMobileMenuOpen(false)} />
-        <main className="flex-1 overflow-x-hidden p-3 sm:p-4 md:p-6 max-w-full min-w-0">
+        <main className="flex-1 overflow-x-hidden p-3 sm:p-4 md:p-6 pb-20 md:pb-6 max-w-full min-w-0">
           {children}
         </main>
       </div>
+      <MobileBottomNav onOpenDrawer={() => setMobileMenuOpen(true)} />
     </div>
   );
 }
