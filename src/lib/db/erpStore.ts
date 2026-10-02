@@ -614,6 +614,7 @@ export class ErpStore {
   private constructor() {
     this.state = this.loadInitialState();
     this.syncAllProductionRuns();
+    this.saveState();
   }
 
   public static getInstance(): ErpStore {
