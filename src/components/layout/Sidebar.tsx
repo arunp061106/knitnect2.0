@@ -65,23 +65,17 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const router = useRouter();
 
   const [isMounted, setIsMounted] = useState(false);
-  const [currentUser, setCurrentUser] = useState<SidebarProfile | null>(() => {
-    if (typeof window !== 'undefined') {
-      const savedRole = localStorage.getItem('knitnect_user_role');
-      const savedName = localStorage.getItem('knitnect_user_name');
-      if (savedRole) {
-        return {
-          full_name: savedName || 'Authenticated User',
-          role: savedRole,
-          department_id: null,
-        };
-      }
-    }
-    return null;
-  });
+  const [currentUser, setCurrentUser] = useState<SidebarProfile | null>(null);
 
   useEffect(() => {
     setIsMounted(true);
+    const savedRole = localStorage.getItem('knitnect_user_role') || 'owner';
+    const savedName = localStorage.getItem('knitnect_user_name') || 'Authenticated User';
+    setCurrentUser({
+      full_name: savedName,
+      role: savedRole,
+      department_id: null,
+    });
     const supabase = createClient();
 
     const loadProfile = async () => {
@@ -174,6 +168,21 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
       window.location.href = '/login';
     }
   };
+
+  if (!isMounted) {
+    return (
+      <aside className="hidden md:flex w-[220px] bg-[#080c14] border-r border-slate-800/60 flex-col flex-shrink-0 min-h-[calc(100vh-3.5rem)] select-none">
+        <div className="px-4 pt-5 pb-3">
+          <div className="h-3 w-28 rounded bg-slate-800/60 animate-pulse" />
+        </div>
+        <div className="flex-1 px-2 space-y-2">
+          {[1, 2, 3, 4, 5, 6].map((i) => (
+            <div key={i} className="h-9 rounded-lg bg-slate-900/40 animate-pulse" />
+          ))}
+        </div>
+      </aside>
+    );
+  }
 
   return (
     <>

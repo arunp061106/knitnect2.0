@@ -21,15 +21,12 @@ export function MobileBottomNav({ onOpenDrawer }: MobileBottomNavProps) {
   const router = useRouter();
 
   const [isMounted, setIsMounted] = useState(false);
-  const [role, setRole] = useState<string>(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('knitnect_user_role') || 'owner';
-    }
-    return 'owner';
-  });
+  const [role, setRole] = useState<string>('owner');
 
   useEffect(() => {
     setIsMounted(true);
+    const saved = localStorage.getItem('knitnect_user_role');
+    if (saved) setRole(saved);
     const supabase = createClient();
 
     const loadRole = async () => {

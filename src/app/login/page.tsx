@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ErpStore, FIXTURE_USERS } from '@/lib/db/erpStore';
+import { FIXTURE_USERS } from '@/lib/db/erpStore';
 import { createClient } from '@/lib/supabase/client';
 import {
   ArrowRight,
@@ -124,14 +124,7 @@ export default function LoginPage() {
       localStorage.setItem('knitnect_user_id', pos.userId);
     }
 
-    // 3. Set central ErpStore in-memory session
-    try {
-      ErpStore.getInstance().setCurrentUser(pos.userId);
-    } catch {
-      // ignore
-    }
-
-    // 4. Background Supabase Auth handshake (fire-and-forget, non-blocking)
+    // 3. Background Supabase Auth handshake (fire-and-forget, non-blocking)
     try {
       const supabase = createClient();
       supabase.auth.signInWithPassword({

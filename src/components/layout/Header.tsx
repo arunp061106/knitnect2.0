@@ -43,21 +43,7 @@ export function Header({ onToggleSidebar }: HeaderProps) {
   const router = useRouter();
 
   const [isMounted, setIsMounted] = useState(false);
-  const [profile, setProfile] = useState<SessionProfile | null>(() => {
-    if (typeof window !== 'undefined') {
-      const savedRole = localStorage.getItem('knitnect_user_role');
-      const savedName = localStorage.getItem('knitnect_user_name');
-      if (savedRole && savedName) {
-        return {
-          id: '',
-          full_name: savedName,
-          email: savedRole === 'owner' ? 'owner@knitnect.com' : savedRole === 'manager' ? 'manager@knitnect.com' : 'employee@knitnect.com',
-          role: savedRole,
-        };
-      }
-    }
-    return null;
-  });
+  const [profile, setProfile] = useState<SessionProfile | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -71,6 +57,16 @@ export function Header({ onToggleSidebar }: HeaderProps) {
   // Load authenticated profile once on mount, then listen for auth changes
   useEffect(() => {
     setIsMounted(true);
+    const savedRole = localStorage.getItem('knitnect_user_role');
+    const savedName = localStorage.getItem('knitnect_user_name');
+    if (savedRole) {
+      setProfile({
+        id: '',
+        full_name: savedName || 'Operator',
+        email: savedRole === 'owner' ? 'owner@knitnect.com' : savedRole === 'manager' ? 'manager@knitnect.com' : 'employee@knitnect.com',
+        role: savedRole,
+      });
+    }
     const supabase = createClient();
 
     const loadProfile = async () => {
