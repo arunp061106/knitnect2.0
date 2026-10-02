@@ -43,7 +43,21 @@ export function Header({ onToggleSidebar }: HeaderProps) {
   const router = useRouter();
 
   const [isMounted, setIsMounted] = useState(false);
-  const [profile, setProfile] = useState<SessionProfile | null>(null);
+  const [profile, setProfile] = useState<SessionProfile | null>(() => {
+    if (typeof window !== 'undefined') {
+      const savedRole = localStorage.getItem('knitnect_user_role');
+      const savedName = localStorage.getItem('knitnect_user_name');
+      if (savedRole && savedName) {
+        return {
+          id: '',
+          full_name: savedName,
+          email: savedRole === 'owner' ? 'owner@knitnect.com' : savedRole === 'manager' ? 'manager@knitnect.com' : 'employee@knitnect.com',
+          role: savedRole,
+        };
+      }
+    }
+    return null;
+  });
   const [authChecked, setAuthChecked] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -74,7 +88,13 @@ export function Header({ onToggleSidebar }: HeaderProps) {
           .eq('id', user.id)
           .single();
 
-        if (data) setProfile(data);
+        if (data) {
+          setProfile(data);
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('knitnect_user_role', data.role);
+            localStorage.setItem('knitnect_user_name', data.full_name);
+          }
+        }
       } catch {
         setProfile(null);
       } finally {
@@ -92,12 +112,22 @@ export function Header({ onToggleSidebar }: HeaderProps) {
             .select('id, full_name, email, role')
             .eq('id', session.user.id)
             .single();
-          if (data) setProfile(data);
+          if (data) {
+            setProfile(data);
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('knitnect_user_role', data.role);
+              localStorage.setItem('knitnect_user_name', data.full_name);
+            }
+          }
         } catch {
           // ignore
         }
       } else {
         setProfile(null);
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('knitnect_user_role');
+          localStorage.removeItem('knitnect_user_name');
+        }
       }
       setAuthChecked(true);
     });
@@ -133,6 +163,10 @@ export function Header({ onToggleSidebar }: HeaderProps) {
     setIsSigningOut(true);
     setDropdownOpen(false);
     try {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('knitnect_user_role');
+        localStorage.removeItem('knitnect_user_name');
+      }
       const supabase = createClient();
       await supabase.auth.signOut();
       window.location.href = '/login';

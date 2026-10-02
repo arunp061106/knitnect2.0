@@ -141,11 +141,16 @@ export default function LoginPage() {
       // Fetch profile role directly to determine destination
       const { data: profile } = await supabase
         .from('profiles')
-        .select('role')
+        .select('role, full_name')
         .eq('id', data.user.id)
         .single();
 
       const role = profile?.role ?? 'employee';
+
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('knitnect_user_role', role);
+        localStorage.setItem('knitnect_user_name', profile?.full_name || '');
+      }
 
       // Full window navigation forces fresh memory state and eliminates stale session cookies
       window.location.href = role === 'employee' ? '/employee/tasks' : '/dashboard';

@@ -65,7 +65,20 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const router = useRouter();
 
   const [isMounted, setIsMounted] = useState(false);
-  const [currentUser, setCurrentUser] = useState<SidebarProfile | null>(null);
+  const [currentUser, setCurrentUser] = useState<SidebarProfile | null>(() => {
+    if (typeof window !== 'undefined') {
+      const savedRole = localStorage.getItem('knitnect_user_role');
+      const savedName = localStorage.getItem('knitnect_user_name');
+      if (savedRole) {
+        return {
+          full_name: savedName || 'Authenticated User',
+          role: savedRole,
+          department_id: null,
+        };
+      }
+    }
+    return null;
+  });
 
   useEffect(() => {
     setIsMounted(true);
@@ -83,9 +96,15 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
           .select('full_name, role, department_id')
           .eq('id', user.id)
           .single();
-        if (data) setCurrentUser(data);
+        if (data) {
+          setCurrentUser(data);
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('knitnect_user_role', data.role);
+            localStorage.setItem('knitnect_user_name', data.full_name);
+          }
+        }
       } catch {
-        setCurrentUser(null);
+        // preserve local cache
       }
     };
 
@@ -99,20 +118,30 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             .select('full_name, role, department_id')
             .eq('id', session.user.id)
             .single();
-          if (data) setCurrentUser(data);
+          if (data) {
+            setCurrentUser(data);
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('knitnect_user_role', data.role);
+              localStorage.setItem('knitnect_user_name', data.full_name);
+            }
+          }
         } catch {
           // ignore
         }
       } else {
         setCurrentUser(null);
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('knitnect_user_role');
+          localStorage.removeItem('knitnect_user_name');
+        }
       }
     });
 
     return () => { listener.subscription.unsubscribe(); };
   }, []);
 
-  const role = currentUser?.role ?? 'employee';
-  const isManagement = isMounted && (role === 'owner' || role === 'manager');
+  const role = currentUser?.role || (typeof window !== 'undefined' ? localStorage.getItem('knitnect_user_role') : null) || 'owner';
+  const isManagement = role === 'owner' || role === 'manager';
   const navItems = isManagement ? managementNav : employeeNav;
 
   const isActive = (href: string) => {
@@ -120,24 +149,24 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     return pathname?.startsWith(href);
   };
 
-  const portalLabel = isMounted
+  const portalLabel = isManagement
     ? role === 'owner'
       ? 'Executive Portal'
-      : role === 'manager'
-      ? 'Management Portal'
-      : 'Employee Portal'
-    : 'Portal';
+      : 'Management Portal'
+    : 'Employee Portal';
 
-  const portalColor = isMounted
+  const portalColor = isManagement
     ? role === 'owner'
       ? 'text-violet-400'
-      : role === 'manager'
-      ? 'text-cyan-400'
-      : 'text-amber-400'
-    : 'text-slate-500';
+      : 'text-cyan-400'
+    : 'text-amber-400';
 
   const handleSwitchRole = async () => {
     try {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('knitnect_user_role');
+        localStorage.removeItem('knitnect_user_name');
+      }
       const supabase = createClient();
       await supabase.auth.signOut();
       window.location.href = '/login';
@@ -154,9 +183,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         <div className="px-4 pt-5 pb-3">
           <div className={`text-[10px] font-bold uppercase tracking-widest ${portalColor} flex items-center gap-1.5`}>
             <span className={`w-1.5 h-1.5 rounded-full ${
-              isMounted
-                ? role === 'owner' ? 'bg-violet-400' : role === 'manager' ? 'bg-cyan-400' : 'bg-amber-400'
-                : 'bg-slate-500'
+              role === 'owner' ? 'bg-violet-400' : role === 'manager' ? 'bg-cyan-400' : 'bg-amber-400'
             }`} />
             {portalLabel}
           </div>
@@ -187,7 +214,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         {/* Footer info & Switch Role button */}
         <div className="p-3 mt-auto space-y-2">
           <div className="rounded-xl p-3 bg-slate-900/60 border border-slate-800/50">
-            {isMounted && isManagement && (
+            {isManagement && (
               <>
                 <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Active Order</div>
                 <div className="flex items-center justify-between">
@@ -202,7 +229,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               </>
             )}
 
-            {isMounted && !isManagement && currentUser && (
+            {!isManagement && currentUser && (
               <>
                 <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">My Assignment</div>
                 <div className="text-xs font-semibold text-slate-300">{currentUser.full_name}</div>
@@ -213,7 +240,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               </>
             )}
 
-            {!isMounted && (
+            {!isMounted && !currentUser && (
               <div className="h-10 rounded bg-slate-800/60 animate-pulse" />
             )}
           </div>
@@ -261,9 +288,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             <div className="px-4 pt-4 pb-2">
               <div className={`text-[10px] font-bold uppercase tracking-widest ${portalColor} flex items-center gap-1.5`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${
-                  isMounted
-                    ? role === 'owner' ? 'bg-violet-400' : role === 'manager' ? 'bg-cyan-400' : 'bg-amber-400'
-                    : 'bg-slate-500'
+                  role === 'owner' ? 'bg-violet-400' : role === 'manager' ? 'bg-cyan-400' : 'bg-amber-400'
                 }`} />
                 {portalLabel}
               </div>
@@ -295,7 +320,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             {/* Footer info & Switch Role */}
             <div className="p-3 border-t border-slate-800/80 mt-auto space-y-2">
               <div className="rounded-xl p-3 bg-slate-900/60 border border-slate-800/50">
-                {isMounted && isManagement && (
+                {isManagement && (
                   <>
                     <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Active Order</div>
                     <div className="flex items-center justify-between">
@@ -309,7 +334,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                     </div>
                   </>
                 )}
-                {isMounted && !isManagement && currentUser && (
+                {!isManagement && currentUser && (
                   <>
                     <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">My Assignment</div>
                     <div className="text-xs font-semibold text-slate-300">{currentUser.full_name}</div>
