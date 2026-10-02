@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useRef } from 'react';
-import { ErpStore } from '@/lib/db/erpStore';
+import { useRouter } from 'next/navigation';
 import { ChatChannel, ChatMessage, Profile, Style } from '@/lib/types/erp';
 import { Badge } from '@/components/ui/Badge';
 import { formatTimeSafe } from '@/lib/utils/format';
@@ -13,22 +13,22 @@ import {
   User,
   Users,
   Lock,
-  ArrowRight,
   ArrowLeft,
+  Loader2,
 } from 'lucide-react';
-
-import { createClient, isSupabaseConfigured } from '@/lib/supabase/client';
+import { createClient } from '@/lib/supabase/client';
 
 export default function ChatPage() {
-  const store = ErpStore.getInstance();
+  const router = useRouter();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
+  const [currentUser, setCurrentUser] = useState<Profile | null>(null);
   const [channels, setChannels] = useState<ChatChannel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messageBody, setMessageBody] = useState('');
   const [mobileShowChat, setMobileShowChat] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   // Structured Tagging State
   const [taggedStyleId, setTaggedStyleId] = useState<string>('');
@@ -38,142 +38,239 @@ export default function ChatPage() {
   const [styles, setStyles] = useState<Style[]>([]);
   const [users, setUsers] = useState<Profile[]>([]);
 
-  const isCloudLive = isSupabaseConfigured();
-
   useEffect(() => {
-    const refresh = () => {
-      const u = store.getCurrentUser();
-      setCurrentUser(u);
-      const chs = store.getChannelsForUser(u);
-      setChannels(chs);
+    let isMounted = true;
+    const supabase = createClient();
 
-      const activeId = activeChannelId || chs[0]?.id || '';
-      if (!activeChannelId && activeId) {
-        setActiveChannelId(activeId);
+    const loadChatData = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+
+        if (!user) {
+          router.push('/login');
+          return;
+        }
+
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', user.id)
+          .single();
+
+        if (profile && isMounted) {
+          setCurrentUser(profile);
+        }
+
+        // Query channels filtered by RLS
+        const { data: dbChannels } = await supabase
+          .from('chat_channels')
+          .select('*')
+          .order('created_at', { ascending: true });
+
+        if (dbChannels && isMounted) {
+          setChannels(dbChannels as ChatChannel[]);
+          if (dbChannels.length > 0) {
+            const initialChannel = activeChannelId || dbChannels[0].id;
+            setActiveChannelId(initialChannel);
+
+            // Fetch messages for active channel
+            const { data: dbMessages } = await supabase
+              .from('chat_messages')
+              .select('*')
+              .eq('channel_id', initialChannel)
+              .order('created_at', { ascending: true });
+
+            if (dbMessages && isMounted) {
+              setMessages(dbMessages as ChatMessage[]);
+            }
+          }
+        }
+
+        // Fetch styles & users for deep-linking tags
+        const { data: dbStyles } = await supabase.from('styles').select('*');
+        if (dbStyles && isMounted) setStyles(dbStyles as Style[]);
+
+        const { data: dbUsers } = await supabase.from('profiles').select('*');
+        if (dbUsers && isMounted) setUsers(dbUsers as Profile[]);
+      } catch (err) {
+        console.error('Failed to load chat data:', err);
+      } finally {
+        if (isMounted) setLoading(false);
       }
-
-      if (activeId) {
-        setMessages(store.getMessagesForChannel(activeId));
-      }
-
-      setStyles(store.getStyles(u.role));
-      setUsers(store.getUsers());
     };
 
-    refresh();
-    const unsub = store.subscribe(refresh);
-    return unsub;
-  }, [store, activeChannelId]);
+    loadChatData();
 
-  // Supabase Realtime synchronization (Multi-device live broadcast across all channels)
+    // Subscribe to channels updates for real-time sidebar previews
+    const channelsSub = supabase
+      .channel('realtime:all_chat_channels')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'chat_channels',
+        },
+        async () => {
+          const { data } = await supabase
+            .from('chat_channels')
+            .select('*')
+            .order('created_at', { ascending: true });
+          if (data && isMounted) {
+            setChannels(data as ChatChannel[]);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      supabase.removeChannel(channelsSub);
+    };
+  }, [router]);
+
+  // Realtime subscription for messages in active channel
   useEffect(() => {
-    if (!isCloudLive) return;
+    if (!activeChannelId) return;
 
     const supabase = createClient();
 
-    // 1. Fetch channel messages from Supabase for current channel
-    if (activeChannelId) {
-      supabase
-        .from('chat_messages')
-        .select('*')
-        .eq('channel_id', activeChannelId)
-        .order('created_at', { ascending: true })
-        .then(({ data, error }) => {
-          if (!error && data && data.length > 0) {
-            data.forEach((m) => store.receiveExternalChatMessage(m as ChatMessage));
-            setMessages(store.getMessagesForChannel(activeChannelId));
-          } else if (error) {
-            console.warn('Could not fetch cloud chat messages:', error.message);
-          }
-        });
-    }
+    // Fetch messages for active channel when activeChannelId changes
+    supabase
+      .from('chat_messages')
+      .select('*')
+      .eq('channel_id', activeChannelId)
+      .order('created_at', { ascending: true })
+      .then(({ data, error }: { data: any; error: any }) => {
+        if (!error && data) {
+          setMessages(data as ChatMessage[]);
+        }
+      });
 
-    // 2. Subscribe to realtime inserts across all channels (updates sidebar previews + active chat)
-    const channel = supabase
-      .channel('realtime:all_chat_messages')
+    // Subscribe to new messages for active channel
+    const messageSub = supabase
+      .channel(`realtime:chat_channel_${activeChannelId}`)
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'chat_messages',
+          filter: `channel_id=eq.${activeChannelId}`,
         },
-        (payload) => {
+        (payload: any) => {
           const newMsg = payload.new as ChatMessage;
-          store.receiveExternalChatMessage(newMsg);
-          if (activeChannelId) {
-            setMessages(store.getMessagesForChannel(activeChannelId));
-          }
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === newMsg.id)) return prev;
+            return [...prev, newMsg];
+          });
         }
       )
-      .subscribe((status) => {
-        console.log('Supabase Realtime status:', status);
-      });
+      .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(messageSub);
     };
-  }, [isCloudLive, activeChannelId, store]);
+  }, [activeChannelId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSelectChannel = (channelId: string) => {
+  const handleSelectChannel = async (channelId: string) => {
     setActiveChannelId(channelId);
-    setMessages(store.getMessagesForChannel(channelId));
     setMobileShowChat(true);
+
+    const supabase = createClient();
+    const { data } = await supabase
+      .from('chat_messages')
+      .select('*')
+      .eq('channel_id', channelId)
+      .order('created_at', { ascending: true });
+
+    if (data) {
+      setMessages(data as ChatMessage[]);
+    }
   };
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!messageBody.trim() || !activeChannelId) return;
+    if (!messageBody.trim() || !activeChannelId || !currentUser) return;
 
-    const localMsg = store.sendChatMessage(
-      activeChannelId,
-      currentUser.id,
-      messageBody.trim(),
-      taggedStyleId || undefined,
-      taggedUserId || undefined
-    );
+    const trimmedBody = messageBody.trim();
+    const style = taggedStyleId ? styles.find((s) => s.id === taggedStyleId) : undefined;
+    const taggedUser = taggedUserId ? users.find((u) => u.id === taggedUserId) : undefined;
 
-    // If Supabase is configured, broadcast message to Postgres Realtime
-    if (isCloudLive) {
-      const supabase = createClient();
-      const style = taggedStyleId ? styles.find((s) => s.id === taggedStyleId) : undefined;
-      const taggedUser = taggedUserId ? users.find((u) => u.id === taggedUserId) : undefined;
+    const supabase = createClient();
+    const msgId = crypto.randomUUID();
+    const nowIso = new Date().toISOString();
 
-      supabase
-        .from('chat_messages')
-        .insert({
-          id: localMsg.id,
-          channel_id: activeChannelId,
-          sender_id: currentUser.id,
-          sender_name: currentUser.full_name,
-          sender_role: currentUser.role,
-          body: messageBody.trim(),
-          tagged_style_id: taggedStyleId || null,
-          tagged_style_number: style?.style_number || null,
-          tagged_user_id: taggedUserId || null,
-          tagged_user_name: taggedUser?.full_name || null,
-          created_at: localMsg.created_at,
-        })
-        .then(({ error }) => {
-          if (error) {
-            console.error('Supabase chat sync error:', error.message);
-            alert(`⚠️ Supabase Cloud Sync Error: "${error.message}"\n\nPlease ensure you ran the SQL migration script in your Supabase SQL Editor and that NEXT_PUBLIC_SUPABASE_URL is https://chbwrpasfuschpcavxdl.supabase.co`);
-          }
-        });
-    }
+    const newMsgObj: ChatMessage = {
+      id: msgId,
+      channel_id: activeChannelId,
+      sender_id: currentUser.id,
+      sender_name: currentUser.full_name || 'Staff Member',
+      sender_role: currentUser.role,
+      body: trimmedBody,
+      tagged_style_id: taggedStyleId || undefined,
+      tagged_style_number: style?.style_number || undefined,
+      tagged_user_id: taggedUserId || undefined,
+      tagged_user_name: taggedUser?.full_name || undefined,
+      created_at: nowIso,
+    };
 
+    // Optimistic UI update
+    setMessages((prev) => [...prev, newMsgObj]);
     setMessageBody('');
     setTaggedStyleId('');
     setTaggedUserId('');
     setShowTagMenu(false);
+
+    const { error } = await supabase.from('chat_messages').insert({
+      id: msgId,
+      channel_id: activeChannelId,
+      sender_id: currentUser.id,
+      sender_name: currentUser.full_name || 'Staff Member',
+      sender_role: currentUser.role,
+      body: trimmedBody,
+      tagged_style_id: taggedStyleId || null,
+      tagged_style_number: style?.style_number || null,
+      tagged_user_id: taggedUserId || null,
+      tagged_user_name: taggedUser?.full_name || null,
+      created_at: nowIso,
+    });
+
+    if (error) {
+      console.error('Supabase chat send error:', error.message);
+      // Revert optimistic update
+      setMessages((prev) => prev.filter((m) => m.id !== msgId));
+      alert(`Chat Error: ${error.message}`);
+      return;
+    }
+
+    // Update channel preview
+    await supabase
+      .from('chat_channels')
+      .update({
+        last_message: trimmedBody,
+        last_message_at: nowIso,
+      })
+      .eq('id', activeChannelId);
   };
 
+  if (loading) {
+    return (
+      <div className="flex h-[60vh] items-center justify-center">
+        <div className="flex flex-col items-center gap-3 text-slate-400">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          <p className="text-sm font-mono">Loading operations communications...</p>
+        </div>
+      </div>
+    );
+  }
+
   const activeChannel = channels.find((c) => c.id === activeChannelId) || channels[0];
-  const canTag = currentUser.role === 'owner' || currentUser.role === 'manager';
+  const canTag = currentUser?.role === 'owner' || currentUser?.role === 'manager';
 
   return (
     <div className="h-[calc(100dvh-7.5rem)] md:h-[calc(100vh-6.5rem)] flex flex-col space-y-2 sm:space-y-4">
@@ -193,26 +290,16 @@ export default function ChatPage() {
 
         {/* Live Cloud Sync Status Badge */}
         <div className="flex items-center gap-2">
-          {isCloudLive ? (
-            <span className="px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-[10px] sm:text-[11px] font-mono bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center gap-1.5 shadow-sm">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="hidden xs:inline">Realtime </span>Live
-            </span>
-          ) : (
-            <span
-              className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1.5"
-              title="Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to Vercel for multi-device realtime chat."
-            >
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-              Local
-            </span>
-          )}
+          <span className="px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-[10px] sm:text-[11px] font-mono bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center gap-1.5 shadow-sm">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="hidden xs:inline">Realtime </span>Live
+          </span>
         </div>
       </div>
 
       {/* Main Chat Interface */}
       <div className="flex-1 flex bg-[#101625] border border-slate-800 rounded overflow-hidden min-h-0">
-        {/* Left Sidebar: Channels List (Full width on mobile until a channel is selected) */}
+        {/* Left Sidebar: Channels List */}
         <div className={`w-full md:w-72 bg-[#0d1320] border-r border-slate-800 flex flex-col flex-shrink-0 ${mobileShowChat ? 'hidden md:flex' : 'flex'}`}>
           <div className="p-3 border-b border-slate-800 text-[11px] font-semibold text-slate-500 uppercase tracking-wider flex items-center justify-between">
             <span>Available Channels ({channels.length})</span>
@@ -257,12 +344,11 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Right Area: Messages + Input (Full width on mobile when open) */}
+        {/* Right Area: Messages + Input */}
         <div className={`flex-1 flex flex-col min-w-0 bg-[#0b0f19] ${!mobileShowChat ? 'hidden md:flex' : 'flex'}`}>
           {/* Active Channel Header */}
           <div className="h-12 border-b border-slate-800 px-3 sm:px-4 flex items-center justify-between bg-[#0d1322] flex-shrink-0 gap-2">
             <div className="flex items-center gap-2 min-w-0">
-              {/* Back to Channels button on Mobile */}
               <button
                 type="button"
                 onClick={() => setMobileShowChat(false)}
@@ -289,7 +375,7 @@ export default function ChatPage() {
               </div>
             ) : (
               messages.map((m) => {
-                const isMe = m.sender_id === currentUser.id;
+                const isMe = m.sender_id === currentUser?.id;
 
                 return (
                   <div

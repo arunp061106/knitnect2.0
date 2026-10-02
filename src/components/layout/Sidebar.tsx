@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { ErpStore } from '@/lib/db/erpStore';
-import { Profile } from '@/lib/types/erp';
+import { createClient } from '@/lib/supabase/client';
 import {
   LayoutDashboard,
   Layers,
@@ -15,7 +15,6 @@ import {
   CreditCard,
   Wallet,
   History,
-  ClipboardList,
   ChevronRight,
   X,
   Zap,
@@ -54,27 +53,54 @@ const employeeNav: NavItem[] = [
   { name: 'Team Chat', href: '/chat', icon: MessageSquare, description: 'Team communication' },
 ];
 
+interface SidebarProfile {
+  full_name: string;
+  role: string;
+  department_id: string | null;
+}
+
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const store = ErpStore.getInstance();
 
   const [isMounted, setIsMounted] = useState(false);
-  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
+  const [currentUser, setCurrentUser] = useState<SidebarProfile | null>(null);
 
   useEffect(() => {
     setIsMounted(true);
-    setCurrentUser(store.getCurrentUser());
-    const unsub = store.subscribe(() => {
-      setCurrentUser(store.getCurrentUser());
+    const supabase = createClient();
+
+    const loadProfile = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase
+        .from('profiles')
+        .select('full_name, role, department_id')
+        .eq('id', user.id)
+        .single();
+      if (data) setCurrentUser(data);
+    };
+
+    loadProfile();
+
+    const { data: listener } = supabase.auth.onAuthStateChange(async (_event: unknown, session: any) => {
+      if (session?.user) {
+        const { data } = await supabase
+          .from('profiles')
+          .select('full_name, role, department_id')
+          .eq('id', session.user.id)
+          .single();
+        if (data) setCurrentUser(data);
+      } else {
+        setCurrentUser(null);
+      }
     });
-    return unsub;
-  }, [store]);
 
-  const isManagement = isMounted
-    ? currentUser.role === 'owner' || currentUser.role === 'manager'
-    : false;
+    return () => { listener.subscription.unsubscribe(); };
+  }, []);
 
+  const role = currentUser?.role ?? 'employee';
+  const isManagement = isMounted && (role === 'owner' || role === 'manager');
   const navItems = isManagement ? managementNav : employeeNav;
 
   const isActive = (href: string) => {
@@ -88,17 +114,17 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   };
 
   const portalLabel = isMounted
-    ? currentUser.role === 'owner'
+    ? role === 'owner'
       ? 'Executive Portal'
-      : currentUser.role === 'manager'
+      : role === 'manager'
       ? 'Management Portal'
       : 'Employee Portal'
     : 'Portal';
 
   const portalColor = isMounted
-    ? currentUser.role === 'owner'
+    ? role === 'owner'
       ? 'text-violet-400'
-      : currentUser.role === 'manager'
+      : role === 'manager'
       ? 'text-cyan-400'
       : 'text-amber-400'
     : 'text-slate-500';
@@ -112,7 +138,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
           <div className={`text-[10px] font-bold uppercase tracking-widest ${portalColor} flex items-center gap-1.5`}>
             <span className={`w-1.5 h-1.5 rounded-full ${
               isMounted
-                ? currentUser.role === 'owner' ? 'bg-violet-400' : currentUser.role === 'manager' ? 'bg-cyan-400' : 'bg-amber-400'
+                ? role === 'owner' ? 'bg-violet-400' : role === 'manager' ? 'bg-cyan-400' : 'bg-amber-400'
                 : 'bg-slate-500'
             }`} />
             {portalLabel}
@@ -126,18 +152,17 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             const active = isActive(item.href);
 
             return (
-              <button
+              <Link
                 key={item.href}
-                type="button"
-                onClick={() => router.push(item.href)}
-                className={`nav-item w-full text-left ${active ? 'active' : ''}`}
+                href={item.href}
+                className={`nav-item w-full text-left flex items-center ${active ? 'active' : ''}`}
               >
                 <Icon className={`nav-icon w-4 h-4`} />
                 <span className="truncate">{item.name}</span>
                 {active && (
                   <ChevronRight className="w-3 h-3 ml-auto text-blue-400 flex-shrink-0" />
                 )}
-              </button>
+              </Link>
             );
           })}
         </nav>
@@ -160,11 +185,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               </>
             )}
 
-            {isMounted && !isManagement && (
+            {isMounted && !isManagement && currentUser && (
               <>
                 <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">My Assignment</div>
                 <div className="text-xs font-semibold text-slate-300">{currentUser.full_name}</div>
-                <div className="text-[10px] text-slate-500 mt-0.5">{currentUser.department_name || 'Floor Operations'}</div>
+                <div className="text-[10px] text-slate-500 mt-0.5">Floor Operations</div>
                 <div className="mt-2 px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-300 font-medium">
                   Floor Operations Active
                 </div>
@@ -211,7 +236,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               <div className={`text-[10px] font-bold uppercase tracking-widest ${portalColor} flex items-center gap-1.5`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${
                   isMounted
-                    ? currentUser.role === 'owner' ? 'bg-violet-400' : currentUser.role === 'manager' ? 'bg-cyan-400' : 'bg-amber-400'
+                    ? role === 'owner' ? 'bg-violet-400' : role === 'manager' ? 'bg-cyan-400' : 'bg-amber-400'
                     : 'bg-slate-500'
                 }`} />
                 {portalLabel}
@@ -225,10 +250,10 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 const active = isActive(item.href);
 
                 return (
-                  <button
+                  <Link
                     key={item.href}
-                    type="button"
-                    onClick={() => handleNavClick(item.href)}
+                    href={item.href}
+                    onClick={onClose}
                     className={`nav-item w-full text-left py-2.5 px-3 rounded-lg flex items-center gap-3 ${active ? 'active bg-blue-600/15 text-blue-400' : 'text-slate-300 hover:bg-slate-800/60'}`}
                   >
                     <Icon className="nav-icon w-4 h-4 flex-shrink-0" />
@@ -236,7 +261,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                     {active && (
                       <ChevronRight className="w-3.5 h-3.5 ml-auto text-blue-400 flex-shrink-0" />
                     )}
-                  </button>
+                  </Link>
                 );
               })}
             </nav>
@@ -258,11 +283,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                     </div>
                   </>
                 )}
-                {isMounted && !isManagement && (
+                {isMounted && !isManagement && currentUser && (
                   <>
                     <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">My Assignment</div>
                     <div className="text-xs font-semibold text-slate-300">{currentUser.full_name}</div>
-                    <div className="text-[10px] text-slate-500 mt-0.5">{currentUser.department_name || 'Floor Operations'}</div>
+                    <div className="text-[10px] text-slate-500 mt-0.5">Floor Operations</div>
                   </>
                 )}
               </div>

@@ -94,8 +94,6 @@ export const INITIAL_CHANNELS: ChatChannel[] = [
     org_id: '00000000-0000-0000-0000-000000000001',
     type: 'common',
     name: 'General / Floor Updates',
-    last_message: 'ERP System active. Shift reports are synchronized.',
-    last_message_at: '2026-09-27T08:00:00Z',
     created_at: '2024-01-01T00:00:00Z',
   },
   {
@@ -106,8 +104,6 @@ export const INITIAL_CHANNELS: ChatChannel[] = [
     participant_a_id: '30000000-0000-0000-0000-000000000001',
     participant_b_id: '30000000-0000-0000-0000-000000000002',
     participant_b_name: 'K. Vignesh (Manager)',
-    last_message: 'Reviewed Offer 9414 yarn rates. Awaiting lab dip signoff.',
-    last_message_at: '2026-09-27T08:30:00Z',
     created_at: '2024-01-01T00:00:00Z',
   },
   {
@@ -118,8 +114,6 @@ export const INITIAL_CHANNELS: ChatChannel[] = [
     participant_a_id: '30000000-0000-0000-0000-000000000001',
     participant_b_id: '30000000-0000-0000-0000-000000000003',
     participant_b_name: 'M. Murugan (Cutting)',
-    last_message: 'Please confirm scale calibration on table 2.',
-    last_message_at: '2026-09-27T09:00:00Z',
     created_at: '2024-01-01T00:00:00Z',
   },
   {
@@ -130,8 +124,6 @@ export const INITIAL_CHANNELS: ChatChannel[] = [
     participant_a_id: '30000000-0000-0000-0000-000000000002',
     participant_b_id: '30000000-0000-0000-0000-000000000003',
     participant_b_name: 'M. Murugan (Cutting)',
-    last_message: 'Verification fixture task assigned for inspection.',
-    last_message_at: '2026-09-27T09:15:00Z',
     created_at: '2024-01-01T00:00:00Z',
   },
 ];
@@ -276,13 +268,13 @@ export const CLIENT_OFFER_9414_COSTING: CostingSheet = {
   sample_qty: 500,
   bulk_target_qty: 5000,
   calculated_bulk_fabric_req_kg: 1750.0,
-  calculated_bulk_yarn_cost: 650000.0,
-  calculated_processing_cost: 201500.0,
-  calculated_total_garment_cost: 851500.0,
-  quoted_price: 430.40,
+  calculated_bulk_yarn_cost: 560210.0,
+  calculated_processing_cost: 195750.0,
+  calculated_total_garment_cost: 755960.0,
+  quoted_price: 151.19,
   final_price_approved_by: '30000000-0000-0000-0000-000000000001',
   approved_at: '2024-04-12T10:00:00Z',
-  approved_price: 430.40,
+  approved_price: 151.19,
   approval_notes: 'Approved per Offer 9414 confirmed buyer tech pack',
   created_at: '2024-01-01T00:00:00Z',
 };
@@ -298,7 +290,7 @@ export const FIXTURE_RUN: ProductionRun = {
   current_stage_name: 'Cutting',
   status: 'in_progress',
   target_qty: 500,
-  blended_cost_per_kg: 486.60, // Real blended fabric rate from Excel (₹486.60/kg)
+  blended_cost_per_kg: 431.98, // Real blended fabric rate (~₹432/kg = ₹431.98/kg)
   start_date: '2026-09-20',
   created_at: '2026-09-20T00:00:00Z',
 };
@@ -316,7 +308,7 @@ export const INITIAL_STAGE_LOGS: ProductionStageLog[] = [
     output_weight_kg: 99.5,
     loss_kg: 0.5,
     loss_pct: 0.5,
-    loss_value: 243.30,
+    loss_value: 215.99, // 0.5 kg * ₹431.98
     status: 'done',
     started_at: '2026-09-20T08:00:00Z',
     completed_at: '2026-09-20T17:00:00Z',
@@ -333,7 +325,7 @@ export const INITIAL_STAGE_LOGS: ProductionStageLog[] = [
     output_weight_kg: 96.0,
     loss_kg: 3.5,
     loss_pct: 3.52,
-    loss_value: 1703.10,
+    loss_value: 1511.93, // 3.5 kg * ₹431.98
     status: 'done',
     started_at: '2026-09-21T08:00:00Z',
     completed_at: '2026-09-21T18:00:00Z',
@@ -350,7 +342,7 @@ export const INITIAL_STAGE_LOGS: ProductionStageLog[] = [
     output_weight_kg: 92.0,
     loss_kg: 4.0,
     loss_pct: 4.17,
-    loss_value: 1946.40,
+    loss_value: 1727.92, // 4.0 kg * ₹431.98
     status: 'done',
     started_at: '2026-09-22T08:00:00Z',
     completed_at: '2026-09-22T19:00:00Z',
@@ -367,7 +359,7 @@ export const INITIAL_STAGE_LOGS: ProductionStageLog[] = [
     output_weight_kg: 90.5,
     loss_kg: 1.5,
     loss_pct: 1.63,
-    loss_value: 729.90,
+    loss_value: 647.97, // 1.5 kg * ₹431.98
     status: 'done',
     started_at: '2026-09-23T08:00:00Z',
     completed_at: '2026-09-23T15:00:00Z',
@@ -384,7 +376,7 @@ export const INITIAL_STAGE_LOGS: ProductionStageLog[] = [
     output_weight_kg: 88.5,
     loss_kg: 2.0,
     loss_pct: 2.21,
-    loss_value: 973.20,
+    loss_value: 863.96, // 2.0 kg * ₹431.98
     status: 'done',
     started_at: '2026-09-24T08:00:00Z',
     completed_at: '2026-09-24T16:00:00Z',
@@ -401,7 +393,7 @@ export const INITIAL_STAGE_LOGS: ProductionStageLog[] = [
     output_weight_kg: 84.0,
     loss_kg: 4.5,
     loss_pct: 5.08,
-    loss_value: 2189.70,
+    loss_value: 1943.91, // 4.5 kg * ₹431.98
     status: 'done',
     started_at: '2026-09-25T08:00:00Z',
     completed_at: '2026-09-25T18:00:00Z',
@@ -419,7 +411,7 @@ export const INITIAL_STAGE_LOGS: ProductionStageLog[] = [
     output_weight_kg: 80.0,
     loss_kg: 10.0,
     loss_pct: 11.11,
-    loss_value: 4866.0, // 10 kg * ₹486.60 = ₹4,866.00 (NOT ZERO!)
+    loss_value: 4319.80, // 10 kg * ₹431.98 = ₹4,319.80
     assigned_to: '30000000-0000-0000-0000-000000000003',
     assigned_to_name: 'M. Murugan',
     employee_reported_output_kg: 80.0,
@@ -604,7 +596,7 @@ export interface ErpState {
   batchTransfers: BatchTransfer[];
 }
 
-const STORAGE_KEY = 'knitnect_erp_state_v2'; // Bumped storage key for fresh load
+const STORAGE_KEY = 'knitnect_erp_state_v3'; // Bumped storage key for fresh load
 
 export class ErpStore {
   private static instance: ErpStore;
@@ -649,17 +641,7 @@ export class ErpStore {
       stageLogs: [...INITIAL_STAGE_LOGS],
       tasks: [FIXTURE_TASK],
       channels: [...INITIAL_CHANNELS],
-      messages: [
-        {
-          id: 'msg-01',
-          channel_id: '40000000-0000-0000-0000-000000000001',
-          sender_id: FIXTURE_USERS[0].id,
-          sender_name: FIXTURE_USERS[0].full_name,
-          sender_role: FIXTURE_USERS[0].role,
-          body: 'System launched. Offer 9414 (RIN Jogging Pants) cutting phase in progress on floor.',
-          created_at: '2026-09-27T08:00:00Z',
-        },
-      ],
+      messages: [],
       dispatchRecords: [],
       paymentRecords: [],
       payrollEntries: FIXTURE_USERS.map((u) => ({

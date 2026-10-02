@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { ErpStore } from '@/lib/db/erpStore';
-import { Task, Profile } from '@/lib/types/erp';
+import { createClient } from '@/lib/supabase/client';
+import { Task } from '@/lib/types/erp';
 import { Badge } from '@/components/ui/Badge';
 import {
   CheckSquare,
@@ -15,14 +15,22 @@ import {
   FileText,
 } from 'lucide-react';
 
+interface EmployeeTaskItem extends Task {
+  stage_name: string;
+  style_number?: string;
+  manager_assigned_weight_kg?: number;
+}
+
 export default function EmployeeTasksPage() {
   const router = useRouter();
-  const store = ErpStore.getInstance();
+  const supabase = createClient();
 
   const [isMounted, setIsMounted] = useState(false);
-  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string>('');
+  const [userName, setUserName] = useState('');
+  const [userDept, setUserDept] = useState('');
+  const [tasks, setTasks] = useState<EmployeeTaskItem[]>([]);
+  const [selectedTask, setSelectedTask] = useState<EmployeeTaskItem | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
 
   // Measurement form state
@@ -32,29 +40,119 @@ export default function EmployeeTasksPage() {
   const [scaleId, setScaleId] = useState('Scale #2 - Table A');
   const [notes, setNotes] = useState('');
 
-  useEffect(() => {
-    setIsMounted(true);
-    const refresh = () => {
-      const u = store.getCurrentUser();
-      setCurrentUser(u);
+  const fetchTasks = useCallback(async (uid: string) => {
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from('tasks')
+      .select(`
+        *,
+        departments (
+          name
+        ),
+        production_stage_logs (
+          id,
+          stage_name,
+          stage_order,
+          input_weight_kg,
+          output_weight_kg,
+          scrap_waste_kg,
+          piece_count,
+          machine_scale_id,
+          stage_notes,
+          production_runs (
+            style_number
+          )
+        )
+      `)
+      .eq('assigned_to', uid)
+      .order('created_at', { ascending: false });
 
-      // STRICT: Only show tasks assigned to this employee
-      if (u.role === 'employee') {
-        const allTasks = store.getTasks(u);
-        const myTasks = allTasks.filter((t) => t.assigned_to === u.id);
-        setTasks(myTasks);
-      } else {
-        // Non-employees shouldn't be here, redirect
-        router.push('/dashboard');
+    if (error) {
+      console.error('Error fetching employee tasks:', error);
+      return;
+    }
+
+    if (data) {
+      const items: EmployeeTaskItem[] = data.map((t: any) => {
+        const stage = t.production_stage_logs;
+        return {
+          id: t.id,
+          department_id: t.department_id,
+          department_name: t.departments?.name,
+          assigned_to: t.assigned_to,
+          created_by: t.created_by,
+          specification: t.specification,
+          status: t.status,
+          expected_completion_date: t.expected_completion_date || '',
+          actual_completion_date: t.actual_completion_date,
+          actual_days_taken: t.actual_days_taken,
+          notes: t.notes,
+          production_stage_log_id: t.production_stage_log_id,
+          created_at: t.created_at,
+          stage_name: stage?.stage_name || 'Production Stage',
+          style_number: stage?.production_runs?.style_number,
+          manager_assigned_weight_kg: Number(stage?.input_weight_kg || 0),
+          employee_measured_output_weight_kg: Number(stage?.output_weight_kg || 0),
+          employee_waste_scrap_weight_kg: Number(stage?.scrap_waste_kg || 0),
+          employee_piece_count: Number(stage?.piece_count || 0),
+          machine_scale_id: stage?.machine_scale_id || '',
+          employee_notes: stage?.stage_notes || '',
+        };
+      });
+      setTasks(items);
+    }
+  }, []);
+
+  useEffect(() => {
+    let isSubscribed = true;
+    setIsMounted(true);
+
+    const init = async () => {
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        router.replace('/login');
+        return;
       }
+
+      if (!isSubscribed) return;
+      setCurrentUserId(user.id);
+
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select(`
+          full_name,
+          role,
+          departments (
+            name
+          )
+        `)
+        .eq('id', user.id)
+        .single();
+
+      if (!profile) {
+        router.replace('/login');
+        return;
+      }
+
+      if (!isSubscribed) return;
+      setUserName(profile.full_name || 'Floor Staff');
+      setUserDept((profile.departments as any)?.name || 'Floor Operations');
+
+      await fetchTasks(user.id);
     };
 
-    refresh();
-    const unsub = store.subscribe(refresh);
-    return unsub;
-  }, [store, router]);
+    init();
 
-  const handleOpenMeasurement = (task: Task) => {
+    return () => {
+      isSubscribed = false;
+    };
+  }, [router, fetchTasks]);
+
+  const handleOpenMeasurement = (task: EmployeeTaskItem) => {
     setSelectedTask(task);
     setMeasuredOutput(task.employee_measured_output_weight_kg || 0);
     setScrapWeight(task.employee_waste_scrap_weight_kg || 0);
@@ -63,7 +161,7 @@ export default function EmployeeTasksPage() {
     setNotes(task.employee_notes || '');
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTask) return;
 
@@ -72,31 +170,92 @@ export default function EmployeeTasksPage() {
       return;
     }
 
-    const res = store.submitEmployeeFloorMeasurement(selectedTask.id, {
-      measuredOutputWeightKg: measuredOutput,
-      wasteScrapWeightKg: scrapWeight,
-      pieceCount,
-      scaleId,
-      employeeNotes: notes,
-      userId: currentUser.id,
+    if (selectedTask.production_stage_log_id) {
+      await supabase
+        .from('production_stage_logs')
+        .update({
+          output_weight_kg: Number(measuredOutput),
+          scrap_waste_kg: Number(scrapWeight),
+          piece_count: Number(pieceCount),
+          machine_scale_id: scaleId,
+          stage_notes: notes,
+          status: 'done',
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', selectedTask.production_stage_log_id);
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+    const { error: tErr } = await supabase
+      .from('tasks')
+      .update({
+        status: 'completed',
+        actual_completion_date: today,
+        actual_days_taken: 1,
+      })
+      .eq('id', selectedTask.id);
+
+    if (tErr) {
+      alert('Failed to submit floor measurement: ' + tErr.message);
+      return;
+    }
+
+    await supabase.from('audit_log').insert({
+      user_id: currentUserId,
+      action: 'UPDATE',
+      table_name: 'tasks',
+      record_id: selectedTask.id,
+      notes: `Floor measurement logged: ${measuredOutput} kg on ${scaleId}`,
     });
 
-    if (res.success) {
-      setFeedback('✓ Floor measurement submitted successfully.');
-      setSelectedTask(null);
-      setTimeout(() => setFeedback(null), 4000);
-    }
+    setFeedback('✓ Floor measurement submitted successfully.');
+    setSelectedTask(null);
+    setTimeout(() => setFeedback(null), 4000);
+    await fetchTasks(currentUserId);
   };
 
-  const handleMarkComplete = (taskId: string) => {
+  const handleMarkComplete = async (taskId: string) => {
     const task = tasks.find((t) => t.id === taskId);
     if (!task?.employee_measured_output_weight_kg) {
       alert('Please enter your floor weight measurement before marking complete.');
       return;
     }
-    store.updateTaskStatus(taskId, 'completed', currentUser.id);
+
+    const today = new Date().toISOString().split('T')[0];
+    const { error } = await supabase
+      .from('tasks')
+      .update({
+        status: 'completed',
+        actual_completion_date: today,
+      })
+      .eq('id', taskId);
+
+    if (error) {
+      alert('Failed to mark task complete: ' + error.message);
+      return;
+    }
+
+    if (task.production_stage_log_id) {
+      await supabase
+        .from('production_stage_logs')
+        .update({
+          status: 'done',
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', task.production_stage_log_id);
+    }
+
+    await supabase.from('audit_log').insert({
+      user_id: currentUserId,
+      action: 'UPDATE',
+      table_name: 'tasks',
+      record_id: taskId,
+      notes: `Marked task completed`,
+    });
+
     setFeedback('✓ Task marked as complete.');
     setTimeout(() => setFeedback(null), 4000);
+    await fetchTasks(currentUserId);
   };
 
   const stats = {
@@ -128,7 +287,7 @@ export default function EmployeeTasksPage() {
             <div>
               <h1 className="text-lg font-bold text-white tracking-tight">My Tasks</h1>
               <p className="text-xs text-slate-400 mt-0.5">
-                {currentUser.full_name} · {currentUser.department_name || 'Floor Operations'}
+                {userName} · {userDept}
               </p>
             </div>
           </div>
@@ -282,7 +441,7 @@ export default function EmployeeTasksPage() {
 
             <form onSubmit={handleSubmit} className="space-y-4">
               {/* Target weight reference */}
-              {selectedTask.manager_assigned_weight_kg && (
+              {selectedTask.manager_assigned_weight_kg ? (
                 <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20">
                   <FileText className="w-4 h-4 text-blue-400 flex-shrink-0" />
                   <div className="text-xs">
@@ -290,7 +449,7 @@ export default function EmployeeTasksPage() {
                     <span className="font-bold text-blue-300 mono-num">{selectedTask.manager_assigned_weight_kg} kg</span>
                   </div>
                 </div>
-              )}
+              ) : null}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -354,7 +513,7 @@ export default function EmployeeTasksPage() {
               </div>
 
               {/* Live discrepancy preview */}
-              {measuredOutput > 0 && selectedTask.manager_assigned_weight_kg && (
+              {measuredOutput > 0 && selectedTask.manager_assigned_weight_kg ? (
                 <div className="rounded-xl bg-slate-900/60 border border-slate-800/60 p-3">
                   <div className="text-[10px] uppercase font-bold text-slate-500 mb-2">Variance Preview</div>
                   <div className="flex items-center justify-between text-xs">
@@ -372,7 +531,7 @@ export default function EmployeeTasksPage() {
                     </div>
                   </div>
                 </div>
-              )}
+              ) : null}
 
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-800/60">
                 <button
@@ -394,4 +553,3 @@ export default function EmployeeTasksPage() {
     </div>
   );
 }
-

@@ -1,29 +1,27 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { ErpStore } from '@/lib/db/erpStore';
-import { PayrollEntry, MonthlyPayrollRun, Profile } from '@/lib/types/erp';
+import { createClient } from '@/lib/supabase/client';
+import { PayrollEntry, MonthlyPayrollRun } from '@/lib/types/erp';
 import { Badge } from '@/components/ui/Badge';
-import * as XLSX from 'xlsx';
+import { exportToExcel } from '@/lib/excel/excelExport';
 import {
   Wallet,
-  Plus,
   Download,
   CheckCircle2,
   Calendar,
-  History,
   TrendingUp,
-  FileSpreadsheet,
 } from 'lucide-react';
 
 export default function PayrollPage() {
   const router = useRouter();
-  const store = ErpStore.getInstance();
+  const supabase = createClient();
 
-  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
+  const [currentUserId, setCurrentUserId] = useState<string>('');
   const [payrollEntries, setPayrollEntries] = useState<PayrollEntry[]>([]);
   const [payrollRuns, setPayrollRuns] = useState<MonthlyPayrollRun[]>([]);
+  const [loading, setLoading] = useState(true);
 
   // Update Salary / Add Increment Modal
   const [isIncrementModalOpen, setIsIncrementModalOpen] = useState(false);
@@ -36,53 +34,227 @@ export default function PayrollPage() {
 
   const [feedback, setFeedback] = useState<string | null>(null);
 
-  useEffect(() => {
-    const user = store.getCurrentUser();
-    if (user.role === 'employee') {
-      router.replace('/employee/tasks');
-      return;
-    }
+  const fetchData = useCallback(async () => {
+    try {
+      // 1. Fetch profiles with departments
+      const { data: profs, error: profsErr } = await supabase
+        .from('profiles')
+        .select(`
+          id,
+          full_name,
+          email,
+          role,
+          department_id,
+          joined_on,
+          base_salary,
+          increment_history,
+          active,
+          departments (
+            name
+          )
+        `)
+        .order('full_name');
 
-    const refresh = () => {
-      const u = store.getCurrentUser();
-      setCurrentUser(u);
-      setPayrollEntries(store.getPayrollEntries(u.role));
-      setPayrollRuns(store.getMonthlyPayrollRuns(u.role));
+      if (profsErr) console.error('Error fetching profiles:', profsErr);
+
+      if (profs) {
+        const entries: PayrollEntry[] = profs.map((p: any) => ({
+          id: p.id,
+          user_id: p.id,
+          user_name: p.full_name,
+          user_email: p.email,
+          department_name: p.departments?.name || (p.role === 'owner' ? 'Executive' : 'Operations'),
+          role: p.role,
+          joined_on: p.joined_on || '2026-01-01',
+          base_salary: Number(p.base_salary || 0),
+          increment_history: Array.isArray(p.increment_history) ? p.increment_history : [],
+          updated_at: p.created_at || new Date().toISOString(),
+        }));
+        setPayrollEntries(entries);
+      }
+
+      // 2. Fetch monthly payroll runs
+      const { data: runs, error: runsErr } = await supabase
+        .from('monthly_payroll_runs')
+        .select('*')
+        .order('month_year', { ascending: false });
+
+      if (runsErr) console.error('Error fetching payroll runs:', runsErr);
+      if (runs) {
+        setPayrollRuns(
+          runs.map((r: any) => ({
+            ...r,
+            employee_snapshots: Array.isArray(r.employee_snapshots) ? r.employee_snapshots : [],
+          }))
+        );
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [supabase]);
+
+  useEffect(() => {
+    const init = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        router.replace('/login');
+        return;
+      }
+
+      setCurrentUserId(user.id);
+
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .single();
+
+      if (!profile || profile.role === 'employee') {
+        router.replace('/employee/tasks');
+        return;
+      }
+
+      await fetchData();
     };
 
-    refresh();
-    const unsub = store.subscribe(refresh);
-    return unsub;
-  }, [store, router]);
+    init();
+  }, [supabase, router, fetchData]);
 
-  const handleUpdateSalary = (e: React.FormEvent) => {
+  const handleUpdateSalary = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedUserId || newSalary <= 0) {
       alert('Please select an employee and enter a valid salary amount.');
       return;
     }
 
-    const res = store.updateEmployeeSalary(
-      selectedUserId,
-      newSalary,
-      incrementNote,
-      currentUser.id
+    const targetProfile = payrollEntries.find((p) => p.user_id === selectedUserId);
+    const currentHistory = targetProfile?.increment_history || [];
+    const increment = {
+      date: new Date().toISOString().split('T')[0],
+      new_salary: Number(newSalary),
+      note: incrementNote || 'Annual increment',
+    };
+    const updatedHistory = [...currentHistory, increment];
+
+    // Update profiles
+    const { error: profErr } = await supabase
+      .from('profiles')
+      .update({
+        base_salary: Number(newSalary),
+        increment_history: updatedHistory,
+      })
+      .eq('id', selectedUserId);
+
+    if (profErr) {
+      alert('Failed to update profile salary: ' + profErr.message);
+      return;
+    }
+
+    // Upsert into payroll_entries
+    await supabase.from('payroll_entries').upsert(
+      {
+        user_id: selectedUserId,
+        base_salary: Number(newSalary),
+        increment_history: updatedHistory,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' }
     );
 
+    // Audit log
+    await supabase.from('audit_log').insert({
+      user_id: currentUserId,
+      action: 'UPDATE',
+      table_name: 'payroll_entries',
+      notes: `Updated salary to ₹${newSalary} for ${targetProfile?.user_name || selectedUserId}`,
+    });
+
     setIsIncrementModalOpen(false);
-    setFeedback(res.message);
+    setIncrementNote('');
+    setFeedback(`Salary updated to ₹${newSalary} for ${targetProfile?.user_name || 'employee'}.`);
     setTimeout(() => setFeedback(null), 4000);
+    await fetchData();
   };
 
-  const handleGeneratePayrollRun = () => {
-    const run = store.generateMonthlyPayrollRun(selectedMonth, currentUser.id);
-    setFeedback(`Monthly payroll run generated for ${run.month_year} totaling ₹${run.total_payroll_amount.toLocaleString()}.`);
+  const handleGeneratePayrollRun = async () => {
+    const snapshots = payrollEntries.map((p) => ({
+      user_id: p.user_id,
+      full_name: p.user_name || 'Staff',
+      department_name: p.department_name || 'Operations',
+      role: p.role || 'employee',
+      salary: p.base_salary,
+    }));
+
+    const totalAmount = snapshots.reduce((sum, s) => sum + s.salary, 0);
+
+    const { data: uProf } = await supabase
+      .from('profiles')
+      .select('org_id')
+      .eq('id', currentUserId)
+      .single();
+
+    const orgId = uProf?.org_id;
+    if (!orgId) {
+      alert('Organization ID not found for current user.');
+      return;
+    }
+
+    const { data: existing } = await supabase
+      .from('monthly_payroll_runs')
+      .select('id')
+      .eq('month_year', selectedMonth)
+      .maybeSingle();
+
+    if (existing) {
+      const { error } = await supabase
+        .from('monthly_payroll_runs')
+        .update({
+          total_payroll_amount: totalAmount,
+          employee_snapshots: snapshots,
+          status: 'approved',
+          approved_by: currentUserId,
+        })
+        .eq('id', existing.id);
+
+      if (error) {
+        alert('Failed to update payroll run: ' + error.message);
+        return;
+      }
+    } else {
+      const { error } = await supabase.from('monthly_payroll_runs').insert({
+        org_id: orgId,
+        month_year: selectedMonth,
+        total_payroll_amount: totalAmount,
+        employee_snapshots: snapshots,
+        status: 'approved',
+        approved_by: currentUserId,
+      });
+
+      if (error) {
+        alert('Failed to create payroll run: ' + error.message);
+        return;
+      }
+    }
+
+    // Audit log
+    await supabase.from('audit_log').insert({
+      user_id: currentUserId,
+      action: 'CREATE',
+      table_name: 'monthly_payroll_runs',
+      notes: `Generated monthly payroll run for ${selectedMonth} (₹${totalAmount})`,
+    });
+
+    setFeedback(`Monthly payroll run generated for ${selectedMonth} totaling ₹${totalAmount.toLocaleString()}.`);
     setTimeout(() => setFeedback(null), 4000);
+    await fetchData();
   };
 
   const handleExportCSV = (run: MonthlyPayrollRun) => {
     const headers = ['User ID', 'Full Name', 'Department', 'Role', 'Monthly Salary (INR)'];
-    const rows = run.employee_snapshots.map((s) => [
+    const rows = (run.employee_snapshots || []).map((s) => [
       s.user_id,
       `"${s.full_name}"`,
       `"${s.department_name}"`,
@@ -103,41 +275,69 @@ export default function PayrollPage() {
     document.body.removeChild(link);
   };
 
-  const handleExportPayrollRegisterExcel = () => {
+  const handleExportPayrollRegisterExcel = async () => {
     try {
-      const wb = XLSX.utils.book_new();
-
       // Sheet 1: Employee Compensation Registry
       const empRows = payrollEntries.map((p) => ({
-        'Employee ID': p.user_id,
-        'Employee Name': p.user_name,
-        'Email Address': p.user_email,
-        'Department': p.department_name,
-        'Role': p.role ? p.role.toUpperCase() : '',
-        'Joining Date': p.joined_on,
-        'Base Salary (Monthly INR)': p.base_salary,
-        'Increments Recorded': p.increment_history?.length || 0,
-        'Latest Increment Details': p.increment_history && p.increment_history.length > 0
-          ? p.increment_history.map(h => `${h.date}: ₹${h.new_salary} (${h.note || 'None'})`).join('; ')
-          : 'None',
+        user_id: p.user_id,
+        user_name: p.user_name,
+        user_email: p.user_email,
+        department_name: p.department_name,
+        role: p.role ? p.role.toUpperCase() : '',
+        joined_on: p.joined_on,
+        base_salary: p.base_salary,
+        increments_count: p.increment_history?.length || 0,
+        increment_details:
+          p.increment_history && p.increment_history.length > 0
+            ? p.increment_history.map((h) => `${h.date}: ₹${h.new_salary} (${h.note || 'None'})`).join('; ')
+            : 'None',
       }));
-      const wsEmp = XLSX.utils.json_to_sheet(empRows);
-      XLSX.utils.book_append_sheet(wb, wsEmp, 'Staff Compensation');
 
       // Sheet 2: Monthly Historical Runs
       const runRows = payrollRuns.map((r) => ({
-        'Run ID': r.id,
-        'Billing Month': r.month_year,
-        'Total Disbursal (INR)': r.total_payroll_amount,
-        'Status': r.status.toUpperCase(),
-        'Authorized By': r.approved_by || 'Management',
-        'Employees Count': r.employee_snapshots?.length || 0,
-        'Generated Timestamp': r.created_at,
+        id: r.id,
+        month_year: r.month_year,
+        total_payroll_amount: r.total_payroll_amount,
+        status: (r.status || '').toUpperCase(),
+        approved_by: r.approved_by || 'Management',
+        employees_count: r.employee_snapshots?.length || 0,
+        created_at: r.created_at,
       }));
-      const wsRuns = XLSX.utils.json_to_sheet(runRows);
-      XLSX.utils.book_append_sheet(wb, wsRuns, 'Payroll Runs');
 
-      XLSX.writeFile(wb, `Knitnect-Payroll-Register-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      await exportToExcel(
+        [
+          {
+            name: 'Staff Compensation',
+            columns: [
+              { header: 'Employee ID', key: 'user_id', width: 22 },
+              { header: 'Employee Name', key: 'user_name', width: 20 },
+              { header: 'Email Address', key: 'user_email', width: 25 },
+              { header: 'Department', key: 'department_name', width: 18 },
+              { header: 'Role', key: 'role', width: 14 },
+              { header: 'Joining Date', key: 'joined_on', width: 15 },
+              { header: 'Base Salary (Monthly INR)', key: 'base_salary', width: 24 },
+              { header: 'Increments Recorded', key: 'increments_count', width: 20 },
+              { header: 'Latest Increment Details', key: 'increment_details', width: 35 },
+            ],
+            rows: empRows,
+          },
+          {
+            name: 'Payroll Runs',
+            columns: [
+              { header: 'Run ID', key: 'id', width: 22 },
+              { header: 'Billing Month', key: 'month_year', width: 16 },
+              { header: 'Total Disbursal (INR)', key: 'total_payroll_amount', width: 22 },
+              { header: 'Status', key: 'status', width: 14 },
+              { header: 'Authorized By', key: 'approved_by', width: 20 },
+              { header: 'Employees Count', key: 'employees_count', width: 18 },
+              { header: 'Generated Timestamp', key: 'created_at', width: 22 },
+            ],
+            rows: runRows,
+          },
+        ],
+        `Knitnect-Payroll-Register-${new Date().toISOString().slice(0, 10)}.xlsx`
+      );
+
       setFeedback('Payroll register exported to Excel (.xlsx) successfully!');
       setTimeout(() => setFeedback(null), 4000);
     } catch (err) {
@@ -146,20 +346,34 @@ export default function PayrollPage() {
     }
   };
 
-  const handleExportRunExcel = (run: MonthlyPayrollRun) => {
+  const handleExportRunExcel = async (run: MonthlyPayrollRun) => {
     try {
-      const wb = XLSX.utils.book_new();
-      const rows = run.employee_snapshots.map((s) => ({
-        'User ID': s.user_id,
-        'Full Name': s.full_name,
-        'Department': s.department_name,
-        'Role': s.role.toUpperCase(),
-        'Monthly Disbursal (INR)': s.salary,
-        'Snapshot Month': run.month_year,
+      const rows = (run.employee_snapshots || []).map((s) => ({
+        user_id: s.user_id,
+        full_name: s.full_name,
+        department_name: s.department_name,
+        role: s.role.toUpperCase(),
+        salary: s.salary,
+        month_year: run.month_year,
       }));
-      const ws = XLSX.utils.json_to_sheet(rows);
-      XLSX.utils.book_append_sheet(wb, ws, `Payroll ${run.month_year}`);
-      XLSX.writeFile(wb, `Knitnect-Payroll-${run.month_year}.xlsx`);
+
+      await exportToExcel(
+        [
+          {
+            name: `Payroll ${run.month_year}`,
+            columns: [
+              { header: 'User ID', key: 'user_id', width: 22 },
+              { header: 'Full Name', key: 'full_name', width: 20 },
+              { header: 'Department', key: 'department_name', width: 18 },
+              { header: 'Role', key: 'role', width: 14 },
+              { header: 'Monthly Disbursal (INR)', key: 'salary', width: 22 },
+              { header: 'Snapshot Month', key: 'month_year', width: 16 },
+            ],
+            rows,
+          },
+        ],
+        `Knitnect-Payroll-${run.month_year}.xlsx`
+      );
       setFeedback(`Payroll snapshot for ${run.month_year} exported to Excel!`);
       setTimeout(() => setFeedback(null), 4000);
     } catch (err) {
@@ -167,7 +381,15 @@ export default function PayrollPage() {
     }
   };
 
-  const totalMonthlyLiability = payrollEntries.reduce((sum, p) => sum + (p.base_salary || 0), 0);
+  const totalMonthlyLiability = payrollEntries.reduce((sum, p) => sum + (Number(p.base_salary) || 0), 0);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-slate-400 text-xs">Loading payroll registry & snapshot runs...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -324,7 +546,7 @@ export default function PayrollPage() {
           <div className="space-y-3">
             {payrollRuns.length === 0 ? (
               <div className="text-center py-8 text-slate-500 text-xs">
-                No monthly payroll snapshot runs generated yet. Click "Generate Monthly Payroll Run" above.
+                No monthly payroll snapshot runs generated yet. Click &quot;Generate Monthly Payroll Run&quot; above.
               </div>
             ) : (
               payrollRuns.map((r) => (

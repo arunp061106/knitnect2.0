@@ -2,8 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { ErpStore } from '@/lib/db/erpStore';
-import { Profile } from '@/lib/types/erp';
+import { createClient } from '@/lib/supabase/client';
 import {
   LayoutDashboard,
   GitBranch,
@@ -19,23 +18,46 @@ interface MobileBottomNavProps {
 export function MobileBottomNav({ onOpenDrawer }: MobileBottomNavProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const store = ErpStore.getInstance();
 
   const [isMounted, setIsMounted] = useState(false);
-  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
+  const [role, setRole] = useState<string>('employee');
 
   useEffect(() => {
     setIsMounted(true);
-    setCurrentUser(store.getCurrentUser());
-    const unsub = store.subscribe(() => {
-      setCurrentUser(store.getCurrentUser());
+    const supabase = createClient();
+
+    const loadRole = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .single();
+      if (data?.role) setRole(data.role);
+    };
+
+    loadRole();
+
+    const { data: listener } = supabase.auth.onAuthStateChange(async (_event: unknown, session: any) => {
+      if (session?.user) {
+        const { data } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', session.user.id)
+          .single();
+        if (data?.role) setRole(data.role);
+      } else {
+        setRole('employee');
+      }
     });
-    return unsub;
-  }, [store]);
+
+    return () => { listener.subscription.unsubscribe(); };
+  }, []);
 
   if (!isMounted) return null;
 
-  const isManagement = currentUser.role === 'owner' || currentUser.role === 'manager';
+  const isManagement = role === 'owner' || role === 'manager';
 
   const employeeTabs = [
     { label: 'Tasks', href: '/employee/tasks', icon: CheckSquare },

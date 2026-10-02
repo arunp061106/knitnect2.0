@@ -1,31 +1,31 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { ErpStore } from '@/lib/db/erpStore';
-import { Style, Profile, GarmentCategory, GarmentSeasonType, GarmentProcessType } from '@/lib/types/erp';
+import { createClient } from '@/lib/supabase/client';
+import { Style, GarmentCategory, GarmentSeasonType, GarmentProcessType } from '@/lib/types/erp';
 import { Badge } from '@/components/ui/Badge';
 import { parseCostingExcelBuffer } from '@/lib/domain/excelParser';
-import * as XLSX from 'xlsx';
+import { exportToExcel } from '@/lib/excel/excelExport';
 import {
   Layers,
   Plus,
   Upload,
   ArrowRight,
   Filter,
-  CheckCircle2,
-  AlertCircle,
   FileSpreadsheet,
   Download,
 } from 'lucide-react';
 
 export default function StylesListPage() {
   const router = useRouter();
-  const store = ErpStore.getInstance();
+  const supabase = createClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [currentUser, setCurrentUser] = useState<Profile>(store.getCurrentUser());
+  const [currentUserId, setCurrentUserId] = useState<string>('');
+  const [orgId, setOrgId] = useState<string>('');
   const [styles, setStyles] = useState<Style[]>([]);
+  const [loading, setLoading] = useState(true);
   const [filterCategory, setFilterCategory] = useState<string>('ALL');
   const [filterProcess, setFilterProcess] = useState<string>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
@@ -43,31 +43,92 @@ export default function StylesListPage() {
   // Excel upload feedback
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
 
+  const fetchStyles = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('styles')
+        .select(`
+          *,
+          style_fabrics (
+            id
+          ),
+          costing_sheets (
+            quoted_price,
+            approved_price
+          )
+        `)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching styles:', error);
+        return;
+      }
+
+      if (data) {
+        const mapped: Style[] = data.map((s: any) => ({
+          ...s,
+          fabrics: s.style_fabrics || [],
+          costing: s.costing_sheets?.[0] || undefined,
+        }));
+        setStyles(mapped);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [supabase]);
+
   useEffect(() => {
-    const refresh = () => {
-      const u = store.getCurrentUser();
-      setCurrentUser(u);
-      if (u.role === 'employee') {
+    const init = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        router.replace('/login');
+        return;
+      }
+
+      setCurrentUserId(user.id);
+
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('role, org_id')
+        .eq('id', user.id)
+        .single();
+
+      if (!profile) {
+        router.replace('/login');
+        return;
+      }
+
+      if (profile.role === 'employee') {
         router.replace('/employee/tasks');
         return;
       }
-      setStyles(store.getStyles(u.role));
+
+      setOrgId(profile.org_id);
+      await fetchStyles();
     };
 
-    refresh();
-    const unsub = store.subscribe(refresh);
-    return unsub;
-  }, [store, router]);
+    init();
+  }, [supabase, router, fetchStyles]);
 
-  const handleCreateStyle = (e: React.FormEvent) => {
+  const handleCreateStyle = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStyleNumber || !newDescription) {
       alert('Please fill in Style Number and Garment Description.');
       return;
     }
 
-    const created = store.createStyle(
-      {
+    if (!orgId) {
+      alert('Organization ID not found.');
+      return;
+    }
+
+    const { data: created, error } = await supabase
+      .from('styles')
+      .insert({
+        org_id: orgId,
         style_number: newStyleNumber.trim().toUpperCase(),
         season: newSeason.trim(),
         offer_no: newOfferNo.trim(),
@@ -75,12 +136,35 @@ export default function StylesListPage() {
         garment_category: newCategory,
         garment_season_type: newSeasonType,
         garment_process_type: newProcessType,
-      },
-      currentUser.id
-    );
+        status: 'costing',
+        created_by: currentUserId,
+      })
+      .select()
+      .single();
 
-    setIsModalOpen(false);
-    router.push(`/styles/${created.id}`);
+    if (error) {
+      alert('Failed to create style: ' + error.message);
+      return;
+    }
+
+    if (created) {
+      await supabase.from('costing_sheets').insert({
+        style_id: created.id,
+        sample_qty: 1,
+        bulk_target_qty: 5000,
+      });
+
+      await supabase.from('audit_log').insert({
+        user_id: currentUserId,
+        action: 'CREATE',
+        table_name: 'styles',
+        record_id: created.id,
+        notes: `Created style ${created.style_number}`,
+      });
+
+      setIsModalOpen(false);
+      router.push(`/styles/${created.id}`);
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -90,11 +174,15 @@ export default function StylesListPage() {
     setUploadStatus('Parsing costing sheet and lab dips from Excel...');
     try {
       const arrayBuffer = await file.arrayBuffer();
-      const parsed = parseCostingExcelBuffer(arrayBuffer);
+      const parsed = await parseCostingExcelBuffer(arrayBuffer);
 
-      // Create style in store
-      const style = store.createStyle(
-        {
+      if (!orgId) throw new Error('Organization context not resolved.');
+
+      // Create style in Supabase
+      const { data: style, error: sErr } = await supabase
+        .from('styles')
+        .insert({
+          org_id: orgId,
           style_number: parsed.styleNumber,
           season: parsed.season,
           offer_no: parsed.offerNo,
@@ -102,27 +190,52 @@ export default function StylesListPage() {
           garment_category: parsed.garmentCategory,
           garment_season_type: parsed.garmentSeasonType,
           garment_process_type: parsed.garmentProcessType,
-        },
-        currentUser.id
-      );
+          status: 'costing',
+          created_by: currentUserId,
+        })
+        .select()
+        .single();
+
+      if (sErr || !style) throw sErr || new Error('Could not insert style.');
 
       // Populate fabrics
-      parsed.fabrics.forEach((f) => {
-        store.addStyleFabric({
-          style_id: style.id,
-          ...f,
-        });
-      });
+      if (parsed.fabrics.length > 0) {
+        await supabase.from('style_fabrics').insert(
+          parsed.fabrics.map((f) => ({
+            style_id: style.id,
+            ...f,
+          }))
+        );
+      }
 
       // Populate lab dips
-      parsed.labDips.forEach((ld) => {
-        store.addLabDip({
-          style_id: style.id,
-          ...ld,
-        });
+      if (parsed.labDips.length > 0) {
+        await supabase.from('lab_dips').insert(
+          parsed.labDips.map((ld) => ({
+            style_id: style.id,
+            ...ld,
+          }))
+        );
+      }
+
+      // Populate initial costing sheet
+      await supabase.from('costing_sheets').insert({
+        style_id: style.id,
+        sample_qty: 1,
+        bulk_target_qty: 5000,
       });
 
-      setUploadStatus(`Successfully imported Style ${style.style_number} with ${parsed.fabrics.length} fabric line items and ${parsed.labDips.length} lab dips!`);
+      await supabase.from('audit_log').insert({
+        user_id: currentUserId,
+        action: 'CREATE',
+        table_name: 'styles',
+        record_id: style.id,
+        notes: `Imported style ${style.style_number} from Excel costing workbook`,
+      });
+
+      setUploadStatus(
+        `Successfully imported Style ${style.style_number} with ${parsed.fabrics.length} fabric lines and ${parsed.labDips.length} lab dips!`
+      );
       setTimeout(() => {
         router.push(`/styles/${style.id}`);
       }, 1200);
@@ -145,23 +258,43 @@ export default function StylesListPage() {
 
   const handleExportStylesCatalog = () => {
     try {
-      const wb = XLSX.utils.book_new();
       const rows = styles.map((s) => ({
-        'Style Number': s.style_number,
-        'Offer No': s.offer_no,
-        'Season': s.season,
-        'Description': s.description,
-        'Category': s.garment_category,
-        'Season Type': s.garment_season_type,
-        'Process Route': s.garment_process_type,
-        'Fabric Lines Count': s.fabrics?.length || 0,
-        'Status': s.status.toUpperCase(),
-        'Quoted Price (INR)': s.costing?.quoted_price || 0,
-        'Approved Price (INR)': s.costing?.approved_price || 0,
+        style_number: s.style_number,
+        offer_no: s.offer_no,
+        season: s.season,
+        description: s.description,
+        category: s.garment_category,
+        season_type: s.garment_season_type,
+        process_route: s.garment_process_type,
+        fabric_lines: s.fabrics?.length || 0,
+        status: s.status.toUpperCase(),
+        quoted_price: s.costing?.quoted_price || 0,
+        approved_price: s.costing?.approved_price || 0,
       }));
-      const ws = XLSX.utils.json_to_sheet(rows);
-      XLSX.utils.book_append_sheet(wb, ws, 'Styles Catalog');
-      XLSX.writeFile(wb, `Knitnect-Styles-Catalog.xlsx`);
+
+      exportToExcel(
+        [
+          {
+            name: 'Styles Catalog',
+            columns: [
+              { header: 'Style Number', key: 'style_number', width: 16 },
+              { header: 'Offer No', key: 'offer_no', width: 12 },
+              { header: 'Season', key: 'season', width: 12 },
+              { header: 'Description', key: 'description', width: 25 },
+              { header: 'Category', key: 'category', width: 14 },
+              { header: 'Season Type', key: 'season_type', width: 14 },
+              { header: 'Process Route', key: 'process_route', width: 18 },
+              { header: 'Fabric Lines Count', key: 'fabric_lines', width: 18 },
+              { header: 'Status', key: 'status', width: 14 },
+              { header: 'Quoted Price (INR)', key: 'quoted_price', width: 18 },
+              { header: 'Approved Price (INR)', key: 'approved_price', width: 18 },
+            ],
+            rows,
+          },
+        ],
+        'Knitnect-Styles-Catalog.xlsx'
+      );
+
       setUploadStatus('Styles catalog exported successfully to Excel (.xlsx)!');
       setTimeout(() => setUploadStatus(null), 4000);
     } catch (err) {
@@ -169,6 +302,14 @@ export default function StylesListPage() {
       alert('Styles catalog exported.');
     }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-slate-400 text-xs">Loading styles and costing portfolio...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -238,269 +379,225 @@ export default function StylesListPage() {
           />
         </div>
 
-        <div className="flex items-center gap-3 w-full sm:w-auto">
-          <div className="flex items-center gap-1.5">
-            <span className="text-slate-400 font-medium">Category:</span>
+        <div className="flex items-center gap-4 flex-wrap w-full sm:w-auto">
+          <div className="flex items-center gap-2">
+            <Filter className="w-3.5 h-3.5 text-slate-400" />
+            <span className="text-slate-400">Category:</span>
             <select
               value={filterCategory}
               onChange={(e) => setFilterCategory(e.target.value)}
-              className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs focus:outline-none"
+              className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 focus:outline-none focus:border-primary"
             >
               <option value="ALL">All Categories</option>
               <option value="Mens">Mens</option>
-              <option value="Womens">Womens</option>
               <option value="Kids">Kids</option>
+              <option value="Womens">Womens</option>
             </select>
           </div>
 
-          <div className="flex items-center gap-1.5">
-            <span className="text-slate-400 font-medium">Branch:</span>
+          <div className="flex items-center gap-2">
+            <span className="text-slate-400">Process Route:</span>
             <select
               value={filterProcess}
               onChange={(e) => setFilterProcess(e.target.value)}
-              className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 text-xs focus:outline-none"
+              className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 focus:outline-none focus:border-primary"
             >
-              <option value="ALL">All Processes</option>
-              <option value="solid_fabric">Solid Fabric</option>
-              <option value="aop_white_based">AOP – White Based</option>
-              <option value="aop_dyed_base">AOP – Dyed Base</option>
+              <option value="ALL">All Routes</option>
+              <option value="solid_fabric">Solid Fabric (15 Stages)</option>
+              <option value="aop_white_based">AOP White Based (15 Stages)</option>
+              <option value="aop_dyed_base">AOP Dyed Base (16 Stages)</option>
             </select>
           </div>
         </div>
       </div>
 
-      {/* Styles Data Table */}
-      {/* Styles Data Table */}
-      <div className="glass-card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="erp-table min-w-[1200px]">
-            <thead>
-              <tr>
-                <th className="w-[140px] whitespace-nowrap">Style Number</th>
-                <th className="w-[100px] whitespace-nowrap">Offer / PO</th>
-                <th className="w-[130px] whitespace-nowrap">Season</th>
-                <th className="w-[110px] whitespace-nowrap">Category</th>
-                <th className="min-w-[200px] max-w-[280px]">Garment Description</th>
-                <th className="w-[130px] whitespace-nowrap">Process Route</th>
-                <th className="w-[130px] whitespace-nowrap">Status</th>
-                <th className="w-[100px] whitespace-nowrap">Fabric Lines</th>
-                <th className="w-[110px] whitespace-nowrap">Lab Dips</th>
-                <th className="w-[120px] whitespace-nowrap">Bulk Costing</th>
-                <th className="w-[110px] text-right whitespace-nowrap">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredStyles.length === 0 ? (
-                <tr>
-                  <td colSpan={11} className="text-center py-12 text-slate-500 text-xs">
-                    No styles match the selected criteria. Create a style or import Offer 9414 Excel workbook.
-                  </td>
-                </tr>
-              ) : (
-                filteredStyles.map((style) => {
-                  const fabrics = style.fabrics || [];
-                  const labDips = style.lab_dips || [];
-                  const costing = style.costing;
-                  const allDipsApproved = labDips.length > 0 && labDips.every((ld) => ld.approval_status === 'approved');
+      {/* Styles Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {filteredStyles.length === 0 ? (
+          <div className="col-span-full py-12 text-center text-slate-500 text-xs">
+            No styles found matching criteria. Click &quot;New Style&quot; or import an Excel costing workbook (.xlsx).
+          </div>
+        ) : (
+          filteredStyles.map((style) => (
+            <div
+              key={style.id}
+              onClick={() => router.push(`/styles/${style.id}`)}
+              className="bg-[#101625] border border-slate-800 hover:border-slate-600 rounded p-4 cursor-pointer transition flex flex-col justify-between space-y-4 hover:shadow-md"
+            >
+              <div>
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <span className="font-mono text-xs font-bold text-white tracking-wider">
+                      {style.style_number}
+                    </span>
+                    <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                      Season: {style.season} • Offer #{style.offer_no}
+                    </div>
+                  </div>
+                  <Badge
+                    variant={
+                      style.status === 'completed'
+                        ? 'success'
+                        : style.status === 'bulk_production'
+                        ? 'info'
+                        : 'neutral'
+                    }
+                  >
+                    {style.status}
+                  </Badge>
+                </div>
 
-                  return (
-                    <tr key={style.id}>
-                      <td className="font-mono font-bold text-white whitespace-nowrap">
-                        <button
-                          onClick={() => router.push(`/styles/${style.id}`)}
-                          className="hover:text-primary transition font-bold text-left cursor-pointer"
-                        >
-                          {style.style_number}
-                        </button>
-                      </td>
-                      <td className="font-mono text-slate-300 whitespace-nowrap">{style.offer_no}</td>
-                      <td className="font-mono text-slate-300 whitespace-nowrap">{style.season} ({style.garment_season_type})</td>
-                      <td className="text-slate-300 whitespace-nowrap">{style.garment_category}</td>
-                      <td className="text-slate-300 font-medium max-w-[280px] whitespace-normal break-words" title={style.description}>
-                        {style.description}
-                      </td>
-                      <td className="whitespace-nowrap">
-                        <Badge variant="neutral">
-                          {style.garment_process_type.replace(/_/g, ' ')}
-                        </Badge>
-                      </td>
-                      <td className="whitespace-nowrap">
-                        <Badge
-                          variant={
-                            style.status === 'completed'
-                              ? 'success'
-                              : style.status === 'dispatch_ready'
-                              ? 'info'
-                              : style.status === 'bulk_production'
-                              ? 'purple'
-                              : 'warning'
-                          }
-                          dot
-                        >
-                          {style.status.replace(/_/g, ' ')}
-                        </Badge>
-                      </td>
-                      <td className="mono-num text-slate-300 whitespace-nowrap">
-                        {fabrics.length} line{fabrics.length === 1 ? '' : 's'}
-                      </td>
-                      <td className="whitespace-nowrap">
-                        {labDips.length === 0 ? (
-                          <span className="text-slate-500 text-[11px]">—</span>
-                        ) : allDipsApproved ? (
-                          <Badge variant="success">Cleared ({labDips.length})</Badge>
-                        ) : (
-                          <Badge variant="warning">
-                            {labDips.filter((ld) => ld.approval_status === 'pending').length} Pending
-                          </Badge>
-                        )}
-                      </td>
-                      <td className="mono-num text-slate-200 whitespace-nowrap">
-                        {costing?.approved_price ? (
-                          <span className="text-emerald-400 font-semibold">
-                            ₹{costing.approved_price}
-                          </span>
-                        ) : costing?.calculated_total_garment_cost ? (
-                          <span>₹{(costing.calculated_total_garment_cost / (costing.bulk_target_qty || 5000)).toFixed(2)}/pc</span>
-                        ) : (
-                          <span className="text-slate-500">—</span>
-                        )}
-                      </td>
-                      <td className="text-right whitespace-nowrap">
-                        <button
-                          onClick={() => router.push(`/styles/${style.id}`)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-200 font-medium transition cursor-pointer"
-                        >
-                          Job Card <ArrowRight className="w-3 h-3" />
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                <p className="text-xs text-slate-300 mt-2 line-clamp-2">{style.description}</p>
+
+                <div className="flex items-center gap-2 mt-3 flex-wrap">
+                  <span className="px-2 py-0.5 rounded bg-slate-800 text-[10px] text-slate-300 font-medium">
+                    {style.garment_category}
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-slate-800 text-[10px] text-slate-300 font-medium">
+                    {style.garment_season_type}
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-primary/20 text-primary text-[10px] font-semibold">
+                    {style.garment_process_type.replace(/_/g, ' ')}
+                  </span>
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
+                <div className="text-slate-400 text-[11px]">
+                  Fabrics: <span className="text-white font-mono">{style.fabrics?.length || 0}</span>
+                </div>
+                <div className="flex items-center gap-1 text-primary font-semibold text-[11px]">
+                  <span>Open Costing & Pipeline</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </div>
+              </div>
+            </div>
+          ))
+        )}
       </div>
 
-      {/* Manual Style Creation Modal */}
+      {/* CREATE STYLE MODAL */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
-          <div className="bg-[#111726] border border-slate-700 rounded-lg max-w-lg w-full p-6 shadow-2xl space-y-4">
+          <div className="bg-[#111726] border border-slate-700 rounded-lg max-w-md w-full p-6 shadow-2xl space-y-4 text-xs">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h2 className="text-sm font-bold text-white uppercase tracking-wider">
-                Create New Style / Offer Order
+                Create New Export Garment Style
               </h2>
               <button
                 onClick={() => setIsModalOpen(false)}
-                className="text-slate-400 hover:text-white text-xs font-mono"
+                className="text-slate-400 hover:text-white"
               >
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleCreateStyle} className="space-y-3.5 text-xs">
+            <form onSubmit={handleCreateStyle} className="space-y-3.5">
+              <div>
+                <label className="block text-slate-400 font-medium mb-1">
+                  Style Number / Code *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. 56003299"
+                  value={newStyleNumber}
+                  onChange={(e) => setNewStyleNumber(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white font-mono focus:outline-none focus:border-primary uppercase"
+                />
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-medium mb-1">Style Number *</label>
+                  <label className="block text-slate-400 font-medium mb-1">Season *</label>
                   <input
                     type="text"
                     required
-                    placeholder="e.g. KB13P301X1"
-                    value={newStyleNumber}
-                    onChange={(e) => setNewStyleNumber(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-white font-mono uppercase focus:outline-none focus:border-primary"
+                    value={newSeason}
+                    onChange={(e) => setNewSeason(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white font-mono focus:outline-none focus:border-primary"
                   />
                 </div>
                 <div>
-                  <label className="block text-slate-400 font-medium mb-1">Offer / PO # *</label>
+                  <label className="block text-slate-400 font-medium mb-1">Offer Number *</label>
                   <input
                     type="text"
                     required
-                    placeholder="e.g. 9414"
                     value={newOfferNo}
                     onChange={(e) => setNewOfferNo(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-white font-mono focus:outline-none focus:border-primary"
+                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white font-mono focus:outline-none focus:border-primary"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-slate-400 font-medium mb-1">Garment Description *</label>
-                <input
-                  type="text"
+                <label className="block text-slate-400 font-medium mb-1">
+                  Garment Description *
+                </label>
+                <textarea
                   required
-                  placeholder="e.g. RIN | JOGGING PANTS"
+                  rows={2}
+                  placeholder="e.g. Mens brushed fleece overhead hooded sweatshirt with rib cuffs"
                   value={newDescription}
                   onChange={(e) => setNewDescription(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-white focus:outline-none focus:border-primary"
+                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white focus:outline-none focus:border-primary"
                 />
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-slate-400 font-medium mb-1">Season</label>
-                  <input
-                    type="text"
-                    value={newSeason}
-                    onChange={(e) => setNewSeason(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-white font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-slate-400 font-medium mb-1">Season Type</label>
-                  <select
-                    value={newSeasonType}
-                    onChange={(e) => setNewSeasonType(e.target.value as any)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-white"
-                  >
-                    <option value="Summer">Summer</option>
-                    <option value="Winter">Winter (Adds Brushing)</option>
-                  </select>
-                </div>
-
+              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-slate-400 font-medium mb-1">Category</label>
                   <select
                     value={newCategory}
-                    onChange={(e) => setNewCategory(e.target.value as any)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-white"
+                    onChange={(e) => setNewCategory(e.target.value as GarmentCategory)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white"
                   >
                     <option value="Mens">Mens</option>
-                    <option value="Womens">Womens</option>
                     <option value="Kids">Kids</option>
+                    <option value="Womens">Womens</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-400 font-medium mb-1">Season Type</label>
+                  <select
+                    value={newSeasonType}
+                    onChange={(e) => setNewSeasonType(e.target.value as GarmentSeasonType)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white"
+                  >
+                    <option value="Winter">Winter (With Heat-Set & Stenter)</option>
+                    <option value="Summer">Summer (Standard)</option>
                   </select>
                 </div>
               </div>
 
               <div>
                 <label className="block text-slate-400 font-medium mb-1">
-                  Garment Process Type (Selects Pipeline Template)
+                  Garment Process Pipeline Route *
                 </label>
                 <select
                   value={newProcessType}
-                  onChange={(e) => setNewProcessType(e.target.value as any)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-white"
+                  onChange={(e) => setNewProcessType(e.target.value as GarmentProcessType)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white"
                 >
-                  <option value="solid_fabric">Solid Fabric (Cutting → Embroidery → Sewing → Packing)</option>
-                  <option value="aop_white_based">AOP – White Based (Printing → Curing → Stenter → Compacting)</option>
-                  <option value="aop_dyed_base">AOP – Dyed Base (Discharge Print → Ageing → Washing → Compacting)</option>
+                  <option value="solid_fabric">Solid Fabric Route (15 Production Stages)</option>
+                  <option value="aop_white_based">All Over Print (AOP) White Base (15 Stages)</option>
+                  <option value="aop_dyed_base">All Over Print (AOP) Dyed Base (16 Stages)</option>
                 </select>
               </div>
 
-              <div className="pt-3 border-t border-slate-800 flex justify-end gap-2">
+              <div className="pt-2 flex justify-end gap-2 border-t border-slate-800">
                 <button
                   type="button"
                   onClick={() => setIsModalOpen(false)}
-                  className="px-3 py-1.5 bg-slate-800 text-slate-300 rounded hover:bg-slate-700"
+                  className="px-3 py-1.5 bg-slate-800 rounded text-slate-300 hover:bg-slate-700"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 bg-primary text-primary-foreground font-semibold rounded hover:bg-primary/90"
+                  className="px-4 py-1.5 bg-primary font-semibold text-primary-foreground rounded hover:bg-primary/90"
                 >
-                  Save & Open Costing
+                  Create & Launch Costing
                 </button>
               </div>
             </form>
