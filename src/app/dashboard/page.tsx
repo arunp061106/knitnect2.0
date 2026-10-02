@@ -206,39 +206,45 @@ export default function DashboardPage() {
 
   useEffect(() => {
     setIsMounted(true);
-    const init = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+    const localRole = typeof window !== 'undefined' ? localStorage.getItem('knitnect_user_role') : null;
+    const localName = typeof window !== 'undefined' ? localStorage.getItem('knitnect_user_name') : null;
 
-      if (!user) {
-        router.replace('/login');
-        return;
+    if (localRole === 'employee') {
+      router.replace('/employee/tasks');
+      return;
+    }
+
+    if (localRole) {
+      setCurrentUserRole(localRole);
+      setCurrentUserName(localName || 'Operator');
+    }
+
+    fetchDashboardData();
+
+    // Async background verification without blocking render
+    const verifyUser = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('role, full_name')
+            .eq('id', user.id)
+            .single();
+          if (profile) {
+            if (profile.role === 'employee') {
+              router.replace('/employee/tasks');
+              return;
+            }
+            setCurrentUserRole(profile.role);
+            setCurrentUserName(profile.full_name || 'Operator');
+          }
+        }
+      } catch {
+        // fallback to local role
       }
-
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('role, full_name')
-        .eq('id', user.id)
-        .single();
-
-      if (!profile) {
-        router.replace('/login');
-        return;
-      }
-
-      if (profile.role === 'employee') {
-        router.replace('/employee/tasks');
-        return;
-      }
-
-      setCurrentUserRole(profile.role);
-      setCurrentUserName(profile.full_name || 'Operator');
-
-      await fetchDashboardData();
     };
-
-    init();
+    verifyUser();
   }, [supabase, router, fetchDashboardData]);
 
   const activeStylesCount = styles.filter((s) => s.status !== 'completed').length;

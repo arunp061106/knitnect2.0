@@ -2,32 +2,20 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
 
 export default function RootPage() {
   const router = useRouter();
 
   useEffect(() => {
-    const redirect = async () => {
-      const supabase = createClient();
-      const { data: { user } } = await supabase.auth.getUser();
+    const role = typeof window !== 'undefined' ? localStorage.getItem('knitnect_user_role') : null;
 
-      if (!user) {
-        router.replace('/login');
-        return;
-      }
-
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', user.id)
-        .single();
-
-      const role = profile?.role ?? 'employee';
-      router.replace(role === 'employee' ? '/employee/tasks' : '/dashboard');
-    };
-
-    redirect();
+    if (!role) {
+      router.replace('/login');
+    } else if (role === 'employee') {
+      router.replace('/employee/tasks');
+    } else {
+      router.replace('/dashboard');
+    }
   }, [router]);
 
   return (

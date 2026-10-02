@@ -43,89 +43,59 @@ export default function EmployeePipelinePage() {
     let isSubscribed = true;
     setIsMounted(true);
 
-    const init = async () => {
-      const supabase = createClient();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+    const localRole = (typeof window !== 'undefined' && localStorage.getItem('knitnect_user_role')) || 'employee';
+    if (localRole !== 'employee') {
+      router.push('/pipeline');
+      return;
+    }
+    setUserDeptName('Cutting');
+    setUserDeptId('10000000-0000-0000-0000-000000000006');
 
-      if (!user) {
-        router.replace('/login');
-        return;
-      }
+    const loadData = async () => {
+      try {
+        const supabase = createClient();
+        const { data, error } = await supabase
+          .from('production_stage_logs')
+          .select(`
+            *,
+            departments (
+              name
+            )
+          `)
+          .order('stage_order', { ascending: true });
 
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select(`
-          role,
-          department_id,
-          departments (
-            name
-          )
-        `)
-        .eq('id', user.id)
-        .single();
+        if (error) {
+          console.error('Error fetching stage logs:', error);
+          return;
+        }
 
-      if (!profile) {
-        router.replace('/login');
-        return;
-      }
-
-      if (profile.role !== 'employee') {
-        router.push('/pipeline');
-        return;
-      }
-
-      if (!isSubscribed) return;
-
-      const deptName = (profile.departments as any)?.name || 'Floor Operations';
-      setUserDeptName(deptName);
-      setUserDeptId(profile.department_id);
-
-      const { data, error } = await supabase
-        .from('production_stage_logs')
-        .select(`
-          *,
-          departments (
-            name
-          )
-        `)
-        .order('stage_order', { ascending: true });
-
-      if (error) {
-        console.error('Error fetching stage logs:', error);
-        return;
-      }
-
-      if (data && isSubscribed) {
-        const logs: StageLogItem[] = data.map((d: any) => ({
-          id: d.id,
-          production_run_id: d.production_run_id,
-          stage_name: d.stage_name,
-          stage_order: d.stage_order,
-          department_id: d.department_id,
-          department_name: d.departments?.name || 'Production',
-          input_weight_kg: Number(d.input_weight_kg || 0),
-          output_weight_kg: Number(d.output_weight_kg || 0),
-          loss_kg: Number(d.loss_kg || 0),
-          loss_pct: Number(d.loss_pct || 0),
-          assigned_to: d.assigned_to,
-          status: d.status,
-          completed_at: d.completed_at,
-          notes: d.notes,
-          discrepancy_status: d.status === 'done' ? 'matched' : undefined,
-        }));
-
-        setAllStageLogs(logs);
-
-        const relevantStages = logs.filter(
-          (l) => l.assigned_to === user.id || (profile.department_id && l.department_id === profile.department_id)
-        );
-        setMyStages(relevantStages.sort((a, b) => a.stage_order - b.stage_order));
+        if (data && isSubscribed) {
+          const logs: StageLogItem[] = data.map((d: any) => ({
+            id: d.id,
+            production_run_id: d.production_run_id,
+            stage_name: d.stage_name,
+            stage_order: d.stage_order,
+            department_id: d.department_id,
+            department_name: d.departments?.name || 'Production',
+            input_weight_kg: Number(d.input_weight_kg || 0),
+            output_weight_kg: Number(d.output_weight_kg || 0),
+            loss_kg: Number(d.loss_kg || 0),
+            loss_pct: Number(d.loss_pct || 0),
+            assigned_to: d.assigned_to,
+            status: d.status,
+            completed_at: d.completed_at,
+            notes: d.stage_notes,
+            discrepancy_status: d.discrepancy_status,
+          }));
+          setAllStageLogs(logs);
+          const cuttingDeptId = '10000000-0000-0000-0000-000000000006';
+          setMyStages(logs.filter((l) => l.department_id === cuttingDeptId));
+        }
+      } catch {
+        // ignore
       }
     };
-
-    init();
+    loadData();
 
     return () => {
       isSubscribed = false;

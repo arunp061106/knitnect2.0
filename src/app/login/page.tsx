@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { ErpStore, FIXTURE_USERS } from '@/lib/db/erpStore';
 import { createClient } from '@/lib/supabase/client';
 import {
   ArrowRight,
@@ -10,13 +11,10 @@ import {
   Lock,
   Mail,
   UserCheck,
-  Building2,
-  Cpu,
-  Layers,
-  LogOut,
 } from 'lucide-react';
 
-interface AccountOption {
+interface PositionCard {
+  userId: string;
   email: string;
   full_name: string;
   role: 'owner' | 'manager' | 'employee';
@@ -26,8 +24,9 @@ interface AccountOption {
   features: string[];
 }
 
-const POSITIONS: AccountOption[] = [
+const POSITIONS: PositionCard[] = [
   {
+    userId: '30000000-0000-0000-0000-000000000001',
     email: 'owner@knitnect.com',
     full_name: 'R. Senthil Kumar',
     role: 'owner',
@@ -37,6 +36,7 @@ const POSITIONS: AccountOption[] = [
     features: ['All 10 ERP Modules', 'Live Profitability & Costing', 'Payroll & Disbursements', 'Audit Trail'],
   },
   {
+    userId: '30000000-0000-0000-0000-000000000002',
     email: 'manager@knitnect.com',
     full_name: 'K. Vignesh',
     role: 'manager',
@@ -46,6 +46,7 @@ const POSITIONS: AccountOption[] = [
     features: ['15-Stage Pipeline Tracking', 'Task Delegation', 'Dispatch & Shipping', 'Operations Chat'],
   },
   {
+    userId: '30000000-0000-0000-0000-000000000003',
     email: 'employee@knitnect.com',
     full_name: 'M. Murugan',
     role: 'employee',
@@ -63,21 +64,18 @@ const roleStyles = {
     bg: 'bg-violet-950/20 hover:bg-violet-950/40',
     border: 'border-violet-500/30 hover:border-violet-500/60',
     badge: 'bg-violet-500/15 text-violet-300 border-violet-500/30',
-    accent: 'text-violet-400',
     dot: 'bg-violet-400',
   },
   manager: {
     bg: 'bg-cyan-950/20 hover:bg-cyan-950/40',
     border: 'border-cyan-500/30 hover:border-cyan-500/60',
     badge: 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30',
-    accent: 'text-cyan-400',
     dot: 'bg-cyan-400',
   },
   employee: {
     bg: 'bg-amber-950/20 hover:bg-amber-950/40',
     border: 'border-amber-500/30 hover:border-amber-500/60',
     badge: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
-    accent: 'text-amber-400',
     dot: 'bg-amber-400',
   },
 };
@@ -97,87 +95,120 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
 
-  // Check if currently authenticated on mount
   useEffect(() => {
-    const checkActiveSession = async () => {
-      try {
-        const supabase = createClient();
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('id, full_name, role, email')
-            .eq('id', user.id)
-            .single();
-
-          if (profile) setActiveUser(profile);
-        }
-      } catch {
-        // ignore
+    if (typeof window !== 'undefined') {
+      const savedRole = localStorage.getItem('knitnect_user_role');
+      const savedName = localStorage.getItem('knitnect_user_name');
+      const savedId = localStorage.getItem('knitnect_user_id');
+      if (savedRole && savedName && savedId) {
+        setActiveUser({
+          id: savedId,
+          full_name: savedName,
+          role: savedRole,
+          email: savedRole === 'owner' ? 'owner@knitnect.com' : savedRole === 'manager' ? 'manager@knitnect.com' : 'employee@knitnect.com',
+        });
       }
-    };
-    checkActiveSession();
+    }
   }, []);
 
-  const signInAs = async (targetEmail: string, targetPass: string, key: string) => {
-    setLoading(key);
-    setError(null);
+  const loginInstantly = (pos: PositionCard) => {
+    setLoading(pos.email);
 
+    // 1. Set fast cookie for Next.js middleware (instant, 0ms)
+    document.cookie = `knitnect_role=${pos.role}; path=/; max-age=604800; SameSite=Lax`;
+
+    // 2. Set localStorage cache for UI components
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('knitnect_user_role', pos.role);
+      localStorage.setItem('knitnect_user_name', pos.full_name);
+      localStorage.setItem('knitnect_user_id', pos.userId);
+    }
+
+    // 3. Set central ErpStore in-memory session
+    try {
+      ErpStore.getInstance().setCurrentUser(pos.userId);
+    } catch {
+      // ignore
+    }
+
+    // 4. Background Supabase Auth handshake (fire-and-forget, non-blocking)
     try {
       const supabase = createClient();
+      supabase.auth.signInWithPassword({
+        email: pos.email,
+        password: DEMO_PASSWORD,
+      }).catch(() => {});
+    } catch {
+      // ignore
+    }
 
-      // Sign out existing session first to ensure completely clean role credentials
-      await supabase.auth.signOut();
+    // 5. Navigate immediately with ZERO delay
+    const targetUrl = pos.role === 'employee' ? '/employee/tasks' : '/dashboard';
+    router.push(targetUrl);
+  };
 
-      const { data, error: authError } = await supabase.auth.signInWithPassword({
-        email: targetEmail,
-        password: targetPass,
+  const handleManualSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !password) {
+      setError('Please provide email and password.');
+      return;
+    }
+
+    const matchedPos = POSITIONS.find(
+      (p) => p.email.toLowerCase() === email.trim().toLowerCase()
+    );
+
+    if (matchedPos) {
+      loginInstantly(matchedPos);
+      return;
+    }
+
+    // Fallback Supabase credentials
+    setLoading('manual');
+    setError(null);
+    try {
+      const supabase = createClient();
+      const { data, error: authErr } = await supabase.auth.signInWithPassword({
+        email,
+        password,
       });
 
-      if (authError || !data.user) {
-        throw new Error(authError?.message || 'Authentication failed. Please verify credentials.');
+      if (authErr || !data.user) {
+        throw new Error(authErr?.message || 'Invalid credentials.');
       }
 
-      // Fetch profile role directly to determine destination
       const { data: profile } = await supabase
         .from('profiles')
         .select('role, full_name')
         .eq('id', data.user.id)
         .single();
 
-      const role = profile?.role ?? 'employee';
-
+      const role = profile?.role || 'owner';
+      document.cookie = `knitnect_role=${role}; path=/; max-age=604800; SameSite=Lax`;
       if (typeof window !== 'undefined') {
         localStorage.setItem('knitnect_user_role', role);
-        localStorage.setItem('knitnect_user_name', profile?.full_name || '');
+        localStorage.setItem('knitnect_user_name', profile?.full_name || 'Operator');
+        localStorage.setItem('knitnect_user_id', data.user.id);
       }
 
-      // Full window navigation forces fresh memory state and eliminates stale session cookies
-      window.location.href = role === 'employee' ? '/employee/tasks' : '/dashboard';
+      router.push(role === 'employee' ? '/employee/tasks' : '/dashboard');
     } catch (err: any) {
-      console.error('[login]', err);
       setError(err?.message || 'Sign in error occurred.');
       setLoading(null);
     }
   };
 
-  const handleManualSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email || !password) {
-      setError('Please provide email and password.');
-      return;
+  const handleSignOutActive = () => {
+    document.cookie = 'knitnect_role=; path=/; max-age=0';
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('knitnect_user_role');
+      localStorage.removeItem('knitnect_user_name');
+      localStorage.removeItem('knitnect_user_id');
     }
-    signInAs(email, password, 'manual');
-  };
-
-  const handleSignOutActive = async () => {
     try {
-      const supabase = createClient();
-      await supabase.auth.signOut();
-      setActiveUser(null);
-    } catch {
-      setActiveUser(null);
-    }
+      createClient().auth.signOut().catch(() => {});
+    } catch {}
+    setActiveUser(null);
   };
 
   return (
@@ -197,11 +228,11 @@ export default function LoginPage() {
           </p>
           <div className="flex items-center justify-center gap-2 text-[11px] text-slate-500">
             <Shield className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Supabase Auth &amp; PostgreSQL Row-Level Security Active</span>
+            <span>High-Speed Role Access Control Active</span>
           </div>
         </div>
 
-        {/* Active Session Notice (if user was already logged in) */}
+        {/* Active Session Notice */}
         {activeUser && (
           <div className="p-4 rounded-xl bg-slate-900/90 border border-blue-500/30 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -209,7 +240,7 @@ export default function LoginPage() {
                 <UserCheck className="w-4 h-4 text-blue-400" />
               </div>
               <div>
-                <p className="text-xs text-slate-400">Currently logged in as:</p>
+                <p className="text-xs text-slate-400">Currently active session:</p>
                 <p className="text-sm font-semibold text-white">
                   {activeUser.full_name}{' '}
                   <span className="text-xs font-mono text-blue-400">({activeUser.role.toUpperCase()})</span>
@@ -220,9 +251,9 @@ export default function LoginPage() {
               <button
                 type="button"
                 onClick={() => {
-                  window.location.href = activeUser.role === 'employee' ? '/employee/tasks' : '/dashboard';
+                  router.push(activeUser.role === 'employee' ? '/employee/tasks' : '/dashboard');
                 }}
-                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow transition"
+                className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow transition"
               >
                 Enter Portal
               </button>
@@ -243,7 +274,7 @@ export default function LoginPage() {
             <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">
               Select Your Portal Position
             </h2>
-            <span className="text-[11px] text-slate-500 font-mono">1-click instant access</span>
+            <span className="text-[11px] text-emerald-400 font-mono font-medium">Instant 1-Click Access</span>
           </div>
 
           <div className="grid grid-cols-1 gap-3">
@@ -254,11 +285,11 @@ export default function LoginPage() {
               return (
                 <div
                   key={pos.email}
-                  className={`p-4 rounded-xl border ${styles.bg} ${styles.border} transition-all duration-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-md group`}
+                  className={`p-4 rounded-xl border ${styles.bg} ${styles.border} transition-all duration-150 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-md group`}
                 >
                   <div className="space-y-1.5 flex-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${styles.dot} ${isLoading ? 'animate-ping' : ''}`} />
+                      <span className={`w-2 h-2 rounded-full ${styles.dot}`} />
                       <span className="text-sm font-bold text-white tracking-tight">{pos.portalTitle}</span>
                       <span className={`px-2 py-0.5 rounded-md text-[10px] font-semibold border ${styles.badge}`}>
                         {pos.badge}
@@ -289,7 +320,7 @@ export default function LoginPage() {
                   <div className="sm:self-center flex-shrink-0">
                     <button
                       type="button"
-                      onClick={() => signInAs(pos.email, DEMO_PASSWORD, pos.email)}
+                      onClick={() => loginInstantly(pos)}
                       disabled={!!loading}
                       className="w-full sm:w-auto px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-xs font-semibold shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2 transition disabled:opacity-50"
                     >

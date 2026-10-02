@@ -1,57 +1,27 @@
-import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
 export async function middleware(request: NextRequest) {
-  let response = NextResponse.next({
-    request: {
-      headers: request.headers,
-    },
-  });
-
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://demo.supabase.co';
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'demo-anon-key';
-
-  const supabase = createServerClient(url, anonKey, {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
-      },
-      setAll(cookiesToSet) {
-        cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
-        response = NextResponse.next({
-          request: {
-            headers: request.headers,
-          },
-        });
-        cookiesToSet.forEach(({ name, value, options }) =>
-          response.cookies.set(name, value, options)
-        );
-      },
-    },
-  });
-
   const pathname = request.nextUrl.pathname;
 
-  // Static files and internal Next.js paths bypass
+  // Static files and internal Next.js paths bypass immediately
   if (
     pathname.startsWith('/_next') ||
     pathname.startsWith('/api') ||
     pathname.includes('.')
   ) {
-    return response;
+    return NextResponse.next();
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // Fast-path role check via instant cookie — ZERO external network latency
+  const roleCookie = request.cookies.get('knitnect_role')?.value;
 
   // If unauthenticated and not on /login, redirect to /login
-  if (!user && pathname !== '/login') {
+  if (!roleCookie && pathname !== '/login') {
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
-  // If authenticated employee trying to access executive/management routes
-  if (user && pathname !== '/login') {
+  // If authenticated employee trying to access executive routes
+  if (roleCookie === 'employee' && pathname !== '/login') {
     const executiveRoutes = [
       '/dashboard',
       '/styles',
@@ -69,19 +39,11 @@ export async function middleware(request: NextRequest) {
     );
 
     if (isAccessingExecutive) {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', user.id)
-        .single();
-
-      if (profile?.role === 'employee') {
-        return NextResponse.redirect(new URL('/employee/tasks', request.url));
-      }
+      return NextResponse.redirect(new URL('/employee/tasks', request.url));
     }
   }
 
-  return response;
+  return NextResponse.next();
 }
 
 export const config = {
