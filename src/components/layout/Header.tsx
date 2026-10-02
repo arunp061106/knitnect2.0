@@ -4,9 +4,13 @@ import React, { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { ErpStore, FIXTURE_USERS } from '@/lib/db/erpStore';
 import { Profile } from '@/lib/types/erp';
-import { ChevronDown, LogOut, RefreshCw, Zap, Calendar, Clock } from 'lucide-react';
+import { ChevronDown, LogOut, RefreshCw, Zap, Calendar, Clock, Menu } from 'lucide-react';
 
-export function Header() {
+interface HeaderProps {
+  onToggleSidebar?: () => void;
+}
+
+export function Header({ onToggleSidebar }: HeaderProps) {
   const router = useRouter();
   const pathname = usePathname();
   const store = ErpStore.getInstance();
@@ -112,11 +116,22 @@ export function Header() {
   };
 
   return (
-    <header className="h-14 border-b border-slate-800/80 bg-[#080c14]/90 backdrop-blur-md px-5 flex items-center justify-between sticky top-0 z-40">
-      {/* Brand */}
-      <div className="flex items-center gap-3">
+    <header className="h-14 border-b border-slate-800/80 bg-[#080c14]/90 backdrop-blur-md px-3 sm:px-5 flex items-center justify-between sticky top-0 z-40">
+      {/* Brand & Mobile Hamburger */}
+      <div className="flex items-center gap-2 sm:gap-3">
+        {onToggleSidebar && (
+          <button
+            type="button"
+            onClick={onToggleSidebar}
+            className="md:hidden p-1.5 -ml-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
+            aria-label="Toggle navigation drawer"
+          >
+            <Menu className="w-5 h-5 text-slate-300" />
+          </button>
+        )}
+
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg gradient-brand flex items-center justify-center shadow-lg">
+          <div className="w-7 h-7 rounded-lg gradient-brand flex items-center justify-center shadow-lg flex-shrink-0">
             <Zap className="w-4 h-4 text-white" />
           </div>
           <div>
@@ -133,17 +148,17 @@ export function Header() {
       </div>
 
       {/* Right side */}
-      <div className="flex items-center gap-3">
-        {/* Device Today's Date Display */}
+      <div className="flex items-center gap-2 sm:gap-3">
+        {/* Device Today's Date Display (Hidden on very small screens to make room for profile) */}
         {isMounted && deviceDateTime.dateStr && (
           <div
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900/80 border border-slate-700/60 text-slate-300 text-xs shadow-sm hover:border-slate-600 transition"
+            className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900/80 border border-slate-700/60 text-slate-300 text-xs shadow-sm hover:border-slate-600 transition"
             title={`Today: ${deviceDateTime.fullDateStr} · ${deviceDateTime.timeStr} (System Device Settings)`}
           >
             <Calendar className="w-3.5 h-3.5 text-sky-400 flex-shrink-0" />
             <span className="font-medium text-slate-200">{deviceDateTime.dateStr}</span>
-            <span className="text-slate-600 hidden sm:inline">&bull;</span>
-            <span className="hidden sm:flex items-center gap-1 font-mono text-slate-400 text-[11px]">
+            <span className="text-slate-600">&bull;</span>
+            <span className="flex items-center gap-1 font-mono text-slate-400 text-[11px]">
               <Clock className="w-3 h-3 text-slate-500" />
               {deviceDateTime.timeStr}
             </span>

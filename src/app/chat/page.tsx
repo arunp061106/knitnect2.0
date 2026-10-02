@@ -14,6 +14,7 @@ import {
   Users,
   Lock,
   ArrowRight,
+  ArrowLeft,
 } from 'lucide-react';
 
 import { createClient, isSupabaseConfigured } from '@/lib/supabase/client';
@@ -27,6 +28,7 @@ export default function ChatPage() {
   const [activeChannelId, setActiveChannelId] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [messageBody, setMessageBody] = useState('');
+  const [mobileShowChat, setMobileShowChat] = useState(false);
 
   // Structured Tagging State
   const [taggedStyleId, setTaggedStyleId] = useState<string>('');
@@ -120,6 +122,7 @@ export default function ChatPage() {
   const handleSelectChannel = (channelId: string) => {
     setActiveChannelId(channelId);
     setMessages(store.getMessagesForChannel(channelId));
+    setMobileShowChat(true);
   };
 
   const handleSendMessage = (e: React.FormEvent) => {
@@ -209,10 +212,11 @@ export default function ChatPage() {
 
       {/* Main Chat Interface */}
       <div className="flex-1 flex bg-[#101625] border border-slate-800 rounded overflow-hidden min-h-0">
-        {/* Left Sidebar: Channels List */}
-        <div className="w-72 bg-[#0d1320] border-r border-slate-800 flex flex-col flex-shrink-0">
-          <div className="p-3 border-b border-slate-800 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-            Available Channels ({channels.length})
+        {/* Left Sidebar: Channels List (Full width on mobile until a channel is selected) */}
+        <div className={`w-full md:w-72 bg-[#0d1320] border-r border-slate-800 flex flex-col flex-shrink-0 ${mobileShowChat ? 'hidden md:flex' : 'flex'}`}>
+          <div className="p-3 border-b border-slate-800 text-[11px] font-semibold text-slate-500 uppercase tracking-wider flex items-center justify-between">
+            <span>Available Channels ({channels.length})</span>
+            <span className="md:hidden text-[10px] text-blue-400 font-normal">Tap to open</span>
           </div>
 
           <div className="divide-y divide-slate-800/60 overflow-y-auto flex-1">
@@ -253,17 +257,26 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Right Area: Messages + Input */}
-        <div className="flex-1 flex flex-col min-w-0 bg-[#0b0f19]">
+        {/* Right Area: Messages + Input (Full width on mobile when open) */}
+        <div className={`flex-1 flex flex-col min-w-0 bg-[#0b0f19] ${!mobileShowChat ? 'hidden md:flex' : 'flex'}`}>
           {/* Active Channel Header */}
-          <div className="h-12 border-b border-slate-800 px-4 flex items-center justify-between bg-[#0d1322] flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-white uppercase tracking-wider">
+          <div className="h-12 border-b border-slate-800 px-3 sm:px-4 flex items-center justify-between bg-[#0d1322] flex-shrink-0 gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              {/* Back to Channels button on Mobile */}
+              <button
+                type="button"
+                onClick={() => setMobileShowChat(false)}
+                className="md:hidden p-1.5 -ml-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition flex-shrink-0"
+                aria-label="Back to channels"
+              >
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+              <span className="text-xs font-bold text-white uppercase tracking-wider truncate">
                 {activeChannel?.name || 'Channel'}
               </span>
-              <Badge variant="neutral">{activeChannel?.type}</Badge>
+              <Badge variant="neutral" className="hidden sm:inline-flex">{activeChannel?.type}</Badge>
             </div>
-            <span className="text-[10px] text-slate-500 font-mono">
+            <span className="text-[10px] text-slate-500 font-mono hidden sm:inline">
               Live Realtime Channel Synchronization Active
             </span>
           </div>
